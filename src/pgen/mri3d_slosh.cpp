@@ -41,13 +41,13 @@
 #include "hydro/hydro.hpp"
 #include "mhd/mhd.hpp"
 #include "shearing_box/shearing_box.hpp"
-#include "pgen/pgen.hpp"
+#include "pgen.hpp"
 
 #include <Kokkos_Random.hpp>
 
 // prototypes for user-defined history and BC function
-void MRIHistory(HistoryData *pdata, Mesh *pm);
-void StratifiedVerticalBCs(Mesh *pm);
+void MriSloshHistory(HistoryData *pdata, Mesh *pm);
+void StratSloshVerticalBCs(Mesh *pm);
 
 //----------------------------------------------------------------------------------------
 //! \fn ProblemGenerator::MRI3d()
@@ -55,11 +55,11 @@ void StratifiedVerticalBCs(Mesh *pm);
 
 void ProblemGenerator::MRI3d(ParameterInput *pin, const bool restart) {
   // enroll user history function
-  user_hist_func = MRIHistory;
+  user_hist_func = MriSloshHistory;
   // user boundary function for vertical boundaries in stratified disks
   auto &is_strat = pmy_mesh_->pmb_pack->pmhd->psbox_u->is_stratified;
   if (is_strat) {
-    user_bcs_func = StratifiedVerticalBCs;
+    user_bcs_func = StratSloshVerticalBCs;
   }
   if (restart) return;
 
@@ -223,11 +223,11 @@ void ProblemGenerator::MRI3d(ParameterInput *pin, const bool restart) {
 }
 
 //----------------------------------------------------------------------------------------
-//! \fn void MRIHistory()
+//! \fn void MriSloshHistory()
 //  \brief Compute and store MRI history data.  Adds Reynolds and Maxwell stress and net
 //  magnetic flux to usual list of MHD history variables
 
-void MRIHistory(HistoryData *pdata, Mesh *pm) {
+void MriSloshHistory(HistoryData *pdata, Mesh *pm) {
   auto &eos_data = pm->pmb_pack->pmhd->peos->eos_data;
   int &nmhd_ = pm->pmb_pack->pmhd->nmhd;
 
@@ -333,11 +333,11 @@ void MRIHistory(HistoryData *pdata, Mesh *pm) {
 }
 
 //----------------------------------------------------------------------------------------
-//! \fn StratifiedVerticalBCs()
+//! \fn StratSloshVerticalBCs()
 //! \brief sets vertical boundaries for conserved variables and magnetic fields in
 //! stratified sheating box by extrapolating density to balance gravity
 
-void StratifiedVerticalBCs(Mesh *pm) {
+void StratSloshVerticalBCs(Mesh *pm) {
   auto pmbp = pm->pmb_pack;
   auto pmhd = pm->pmb_pack->pmhd;
   auto &indcs = pm->mb_indcs;
