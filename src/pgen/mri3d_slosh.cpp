@@ -3,7 +3,7 @@
 // Copyright(C) 2020 James M. Stone <jmstone@ias.edu> and the Athena code team
 // Licensed under the 3-clause BSD License (the "LICENSE")
 //========================================================================================
-//! \file mri3d.cpp
+//! \file mri3d_slosh.cpp
 //! \brief Problem generator for 3D MRI in both unstratified and stratified shearing box.
 //!
 //! PURPOSE:  Problem generator for 3D MRI. Unstratified case based on the initial
@@ -50,10 +50,10 @@ void MriSloshHistory(HistoryData *pdata, Mesh *pm);
 void StratSloshVerticalBCs(Mesh *pm);
 
 //----------------------------------------------------------------------------------------
-//! \fn ProblemGenerator::MRI3d()
+//! \fn ProblemGenerator::MRISlosh()
 //  \brief
 
-void ProblemGenerator::MRI3d(ParameterInput *pin, const bool restart) {
+void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
   // enroll user history function
   user_hist_func = MriSloshHistory;
   // user boundary function for vertical boundaries in stratified disks
