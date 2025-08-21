@@ -1,0 +1,81 @@
+# AthenaXXX input file for warped disk setup
+
+<comment>
+problem   = warped disk
+
+<job>
+basename  = warp      # problem ID: basename of output filenames
+
+<output1>
+file_type   = bin       # Tabular data dump
+variable    = hydro_u   # variables to be output
+dt          = 2.29      # time increment between outputs
+
+<output2>
+file_type   = hst       # history data dump
+dt          = 0.0229    # time increment between outputs
+
+<time>
+evolution   = dynamic
+cfl_number  = 0.3       # The Courant, Friedrichs, & Lewy (CFL) Number
+nlim        = -1        # cycle limit
+tlim        = 139.69    # time limit
+integrator  = rk2       # time integration algorithm
+
+<mesh>
+nghost    = 2           # Number of ghost cells
+
+nx1         = 480       # Number of zones in X1-direction
+x1min       = -9.0      # minimum value of X1
+x1max       = 9.0       # maximum value of X1
+ix1_bc      = user      # Inner-X1 boundary condition flag
+ox1_bc      = user      # Outer-X1 boundary condition flag
+x1rat       = 1.0       # non-uniform grid ratio
+
+nx2         = 480        # Number of zones in X2-direction
+x2min       = -9.0       # minimum value of X2
+x2max       = 9.0        # maximum value of X2
+ix2_bc      = user       # Inner-X2 boundary condition flag
+ox2_bc      = user       # Outer-X2 boundary condition flag
+
+nx3         = 270        # Number of zones in X3-direction
+x3min       = -3.3       # minimum value of X3
+x3max       = 3.3        # maximum value of X3
+ix3_bc      = user       # Inner-X3 boundary condition flag
+ox3_bc      = user       # Outer-X3 boundary condition flag
+
+refinement  = None
+
+<meshblock>
+nx1       = 60       # Number of cells in each MeshBlock, X1-dir
+nx2       = 60       # Number of cells in each MeshBlock, X2-dir
+nx3       = 90       # Number of cells in each MeshBlock, X3-dir
+
+<hydro>
+eos         = isothermal    # EOS type
+iso_sound_speed = 0.035     # Isothermal sound speed
+dfloor      = 1.e-9         # Density floor
+pfloor      = 1.e-12        # Pressure floor
+rsolver     = hlle          # Riemann-solver to be used
+
+<problem>
+pgen_name = warp_disc   # problem generator name
+user_srcs = true        # Switch the user source terms on
+GM_soft = 1.0           # Sets a softened central potential for use in cartesian coordinates
+softening_len = 0.01    # Set the softening length smoothing parameter
+r0 = 1.0                # The inner edge of the disc at interior radial boundary
+rminmask = 1.0          # Set the masking boundaries (within we reset all values at the end of each timestep in UserWorkInLoop)
+rmaxmask = 9.0
+thetaminmask = 1.2217305 
+thetamaxmask = 1.9198622 
+rho0 = 1.0              # The midplane density normalisation at the inner radius 
+d_slope = 1.5           # The power law profile for the volume density
+c0sq  = 0.001225        # The sound speed squared (P/rho) at the inner radial boundary
+s_slope = 0.0           # The power law profile for the sound speed squared (temperature) profile
+relax_cs = 0            # [0] Relax to locally isothermal in [1] = sph coords [2] = cylindrical coords
+beta = 0.0              # Set the cooling timescale (in units of the local orbital timescale)
+damp_switch = 0         # [1] Switch on vertical damping 
+tau = 0.01              # Set the velocity damping timescale (in units of the local orbital timescale)
+nu_iso = 0.0            # Set the constant alpha viscosity here
+r_warp_mid = 5.0        # Set the middle of the warped bump
+warp_beta0 = 0.035      # Set the magnitude of the maximal tilt
