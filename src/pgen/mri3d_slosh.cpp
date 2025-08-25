@@ -49,19 +49,105 @@
 void MriSloshHistory(HistoryData *pdata, Mesh *pm);
 void StratSloshVerticalBCs(Mesh *pm);
 
+// User-defined source term for implementing sloshing flow
+void SloshingSource(Mesh* pm, const Real bdt);
+
+// unnamed namespace for prototypes accessible by all functions in this file
+namespace {
+
+  // Useful container for physical parameters of the sloshing disc
+  // for controlled access to functions in this file
+  struct pgen_params {
+
+    Real psi;
+    Real Lx,Lz;
+    Real d0;
+  
+  };
+
+} // End of namespace
+
+// Now store problem parameters in a struct to be passed to functions for
+// more controlled access.
+pgen_params params;
+
 //----------------------------------------------------------------------------------------
 //! \fn ProblemGenerator::MRISlosh()
 //  \brief
 
 void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
+
+  //............................................. 
+  // Initialize problem variables
+  //............................................. 
+
+  // Get the MeshBlockPack
+  MeshBlockPack *pmbp = pmy_mesh_->pmb_pack;
+
+  Real amp   = pin->GetReal("problem","amp");
+
+  Real beta  = pin->GetReal("problem","beta");
+  int nwx    = pin->GetOrAddInteger("problem","nwx",1);
+  int ifield = pin->GetOrAddInteger("problem","ifield",1);
+
+  // background density, pressure, and magnetic field
+  Real d0 = pin->GetOrAddReal("problem","dens",1.0);
+  Real p0,hs;
+
+  EOS_Data &eos = pmbp->pmhd->peos->eos_data;
+  if (eos.is_ideal) {
+    p0 = pin->GetReal("problem","pres");
+  } else {
+    p0 = d0*SQR(eos.iso_cs);
+    hs = eos.iso_cs/(pmy_mesh_->pmb_pack->pmhd->psbox_u->omega0);   // scale height
+  }
+
+  // Background density, pressure, and magnetic field - currently hardcoded here
+  Real binit = 0.0;
+  if (pin->GetOrAddReal("problem","mag_switch",1) == 1){
+    binit = std::sqrt(2.0*p0/beta);
+  }
+
+  // Extract the box size parameters
+  Real x1size = pmy_mesh_->mesh_size.x1max - pmy_mesh_->mesh_size.x1min;
+  Real kx = 2.0*(M_PI/x1size)*(static_cast<Real>(nwx));
+  Real x3size = std::max(abs(pmy_mesh_->mesh_size.x3max),abs(pmy_mesh_->mesh_size.x3min));
+  Real zfield_limit = pin->GetOrAddReal("problem","zlimit",x3size);
+
+  // Store parameters for sloshing disc in params struct
+  Real psi = pin->GetOrAddReal("problem","psi",0.0);
+  params.psi = psi;
+  params.Lx = x1size;
+  params.Lz = pmy_mesh_->mesh_size.x3max - pmy_mesh_->mesh_size.x3min;
+  params.d0 = d0;
+  
+  //............................................. 
+  // Enroll user functions 
+  //............................................. 
+
   // enroll user history function
   user_hist_func = MriSloshHistory;
+  
   // user boundary function for vertical boundaries in stratified disks
   auto &is_strat = pmy_mesh_->pmb_pack->pmhd->psbox_u->is_stratified;
   if (is_strat) {
     user_bcs_func = StratSloshVerticalBCs;
   }
+
+  // Enroll user source terms
+  if (user_srcs && psi>0.0) {
+      user_srcs_func = SloshingSource;
+    } else if ((psi > 0.0) && (!user_srcs)) {
+    std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__ << std::endl
+              << "Sloshing flow source terms not implemented even though psi is set > 0 in parameter file" << std::endl;
+    exit(EXIT_FAILURE);
+  }
+  
   if (restart) return;
+
+  //............................................. 
+  // Preliminiary error checks
+  //............................................. 
 
   // First, do some error checks
   if (!(pmy_mesh_->three_d)) {
@@ -70,7 +156,6 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
     exit(EXIT_FAILURE);
   }
 
-  MeshBlockPack *pmbp = pmy_mesh_->pmb_pack;
   if (pmbp->pmhd != nullptr) {
     if (pmbp->pmhd->psbox_u == nullptr) {
       std::cout <<"### FATAL ERROR in "<< __FILE__ <<" at line " <<__LINE__ << std::endl
@@ -84,7 +169,6 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
     exit(EXIT_FAILURE);
   }
 
-  EOS_Data &eos = pmbp->pmhd->peos->eos_data;
   Real gm1 = eos.gamma - 1.0;
   if (eos.is_ideal && (is_strat)) {
     std::cout << "### FATAL ERROR in " << __FILE__ << " at line " << __LINE__ << std::endl
@@ -92,36 +176,21 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
     exit(EXIT_FAILURE);
   }
 
-  // initialize problem variables
-  Real amp   = pin->GetReal("problem","amp");
-  Real beta  = pin->GetReal("problem","beta");
-  int nwx    = pin->GetOrAddInteger("problem","nwx",1);
-  int ifield = pin->GetOrAddInteger("problem","ifield",1);
+  //............................................. 
+  // Capture variables for kernel
+  //............................................. 
 
-  // background density, pressure, and magnetic field
-  Real d0 = pin->GetOrAddReal("problem","dens",1.0);
-  Real p0,hs;
-  if (eos.is_ideal) {
-    p0 = pin->GetReal("problem","pres");
-  } else {
-    p0 = d0*SQR(eos.iso_cs);
-    hs = eos.iso_cs/(pmy_mesh_->pmb_pack->pmhd->psbox_u->omega0);   // scale height
-  }
-  Real binit = std::sqrt(2.0*p0/beta);
-
-  Real x1size = pmy_mesh_->mesh_size.x1max - pmy_mesh_->mesh_size.x1min;
-  Real kx = 2.0*(M_PI/x1size)*(static_cast<Real>(nwx));
-  Real x3size = std::max(abs(pmy_mesh_->mesh_size.x3max),abs(pmy_mesh_->mesh_size.x3min));
-  Real zfield_limit = pin->GetOrAddReal("problem","zlimit",x3size);
-
-  // capture variables for kernel
   auto &indcs = pmy_mesh_->mb_indcs;
   int &is = indcs.is; int &ie = indcs.ie;
   int &js = indcs.js; int &je = indcs.je;
   int &ks = indcs.ks; int &ke = indcs.ke;
   auto &size = pmbp->pmb->mb_size;
 
-  // Initialize magnetic field first, so entire arrays are initialized before adding
+  //............................................. 
+  // Initialize magnetic field
+  //............................................. 
+
+  // Initialized magnetic field first, so entire arrays are initialized before adding
   // magnetic energy to conserved variables in next loop.  For 3D shearing box
   // B1=Bx, B2=By, B3=Bz
   // ifield = 1 - Bz=binit sin(kx*xav1) field with zero-net-flux [default]
@@ -173,7 +242,10 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
     }
   });
 
-  // Initialize conserved variables
+  //............................................. 
+  // Initialize conserved variables 
+  //............................................. 
+
   // Only sets up random perturbations in pressure to seed MRI
   auto &u0 = pmbp->pmhd->u0;
   Kokkos::Random_XorShift64_Pool<> rand_pool64(pmbp->gids);
@@ -223,8 +295,56 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
 }
 
 //----------------------------------------------------------------------------------------
+//! \fn void SloshingSource()
+//! \brief user source function which implements the artificial radial forcing which
+//  mimics the warped pressure gradients in a distorted disc.
+
+void SloshingSource(Mesh* pm, const Real bdt) {
+
+  auto &indcs = pm->mb_indcs;
+  int is = indcs.is, ie = indcs.ie;
+  int js = indcs.js, je = indcs.je;
+  int ks = indcs.ks, ke = indcs.ke;
+  MeshBlockPack *pmbp = pm->pmb_pack;
+  auto &size = pmbp->pmb->mb_size;
+  int nmb1 = pmbp->nmb_thispack-1;
+
+  DvceArray5D<Real> u0_, w0_;
+  if (pmbp->pmhd != nullptr) {
+      u0_ = pmbp->pmhd->u0;
+      w0_ = pmbp->pmhd->w0;
+    }
+
+  // Extract the time (sloshing forcing is time-dependent function)
+  Real time = pm->time;
+
+  // Set the forcing amplitude at this time
+  Real forcing = params.psi*std::cos(time);
+
+  // Loop over the meshbblocks and cells
+  par_for("sbox", DevExeSpace(), 0, nmb1, ks, ke, js, je, is, ie,
+  KOKKOS_LAMBDA(const int m, const int k, const int j, const int i) {
+
+    // Extract the z coordinate for the cell center
+    Real &x3min = size.d_view(m).x3min;
+    Real &x3max = size.d_view(m).x3max;
+    int nx3 = indcs.nx3;
+    Real z = CellCenterX(k-ks, nx3, x3min, x3max);
+
+    // Extract the density
+    Real den = w0_(m,IDN,k,j,i);
+
+    // Add the source terms
+    u0_(m,IM1,k,j,i) += bdt*den*forcing*z;
+    
+  });
+
+  return;
+}
+
+//----------------------------------------------------------------------------------------
 //! \fn void MriSloshHistory()
-//  \brief Compute and store MRI history data.  Adds Reynolds and Maxwell stress and net
+//! \brief Compute and store MRI history data.  Adds Reynolds and Maxwell stress and net
 //  magnetic flux to usual list of MHD history variables
 
 void MriSloshHistory(HistoryData *pdata, Mesh *pm) {
