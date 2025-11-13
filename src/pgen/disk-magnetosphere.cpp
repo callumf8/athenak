@@ -36,85 +36,47 @@
 #include "mesh/mesh.hpp"
 #include "parameter_input.hpp"
 
-// CFHERE .....
-
 // prototypes for functions used internally to this pgen
 namespace {
 
+    KOKKOS_INLINE_FUNCTION
+    static void GetCylCoord(struct my_params mp, Real &rad,Real &phi,Real &z,Real &x1,Real &x2,Real &x3);
 
-KOKKOS_INLINE_FUNCTION
-static void GetCylCoord(Real &rad,Real &phi,Real &z,Real &x1,Real &x2,Real &x3)
+    KOKKOS_INLINE_FUNCTION
+    static void GetSphCoord(struct my_params mp, Real &rc,Real &theta,Real &phi, Real &x1, Real &x2, Real &x3);
 
-KOKKOS_INLINE_FUNCTION
-static Real VelProfileCyl(struct warp_pgen pgen, const Real rad, const Real phi, const Real z);
+    KOKKOS_INLINE_FUNCTION
+    static Real DenProfileCyl(struct my_params mp, const Real rad, const Real phi, const Real z);
 
-// CALLUM: HydroDiffusion Class is not implemented in this version of the code
-// void AlphaViscosity(HydroDiffusion *phdif, MeshBlock *pmb, const AthenaArray<Real> &prim,
-//                     const AthenaArray<Real> &bcc, int is, int ie, int js, int je,
-//                     int ks, int ke);
+    KOKKOS_INLINE_FUNCTION
+    static Real PoverR(struct my_params mp, const Real rad, const Real phi, const Real z);
 
-// KOKKOS_INLINE_FUNCTION
-// static void CartToCylCoord(struct warp_pgen pgen, Real &rad, Real &phi, Real &z, const Real xcart, const Real ycart, const Real zcart);
+    KOKKOS_INLINE_FUNCTION
+    static void VelProfileCyl(struct my_params mp, const Real rad, const Real phi, const Real z, Real &v1, Real &v2, Real &v3);
 
-// KOKKOS_INLINE_FUNCTION
-// static void CylToCartCoord(struct warp_pgen pgen, Real &xcart, Real &ycart, Real &zcart, const Real rad, const Real phi, const Real z);
+    // Initialize global instance of the parameter structure
+    // pgen_struct disc_params;
 
-// KOKKOS_INLINE_FUNCTION
-// static void CylToSphCoord(struct warp_pgen pgen, Real &r, Real &theta, Real &phi, const Real rad_cyl, const Real phi_cyl, const Real z_cyl);
-
-// KOKKOS_INLINE_FUNCTION
-// static void SphToCartCoord(struct warp_pgen pgen, Real &xcart, Real &ycart, Real &zcart, const Real r, const Real theta, const Real phi);
-
-// KOKKOS_INLINE_FUNCTION
-// static void CartToSphCoord(struct warp_pgen pgen, Real &r, Real &theta, Real &phi, const Real xcart, const Real ycart, const Real zcart);
-
-// KOKKOS_INLINE_FUNCTION
-// static void SphToCartVec(struct warp_pgen pgen, Real &vec_x,Real &vec_y,Real &vec_z, const Real vec_r, const Real vec_theta, const Real vec_phi, const Real theta, const Real phi);
-
-// KOKKOS_INLINE_FUNCTION
-// static void CartToSphVec(struct warp_pgen pgen, Real &vec_r,Real &vec_theta,Real &vec_phi, const Real vec_x, const Real vec_y, const Real vec_z, const Real theta, const Real phi);
-
-// KOKKOS_INLINE_FUNCTION
-// static void CylToCartVec(struct warp_pgen pgen, Real &vec_x,Real &vec_y,Real &vec_z, const Real vec_cr, const Real vec_cphi, const Real vec_cz, const Real phi);
-
-// KOKKOS_INLINE_FUNCTION
-// static void CartToCylVec(struct warp_pgen pgen, Real &vec_cr,Real &vec_cphi,Real &vec_cz, const Real vec_x, const Real vec_y, const Real vec_z, const Real phi);
-
-// KOKKOS_INLINE_FUNCTION
-// static void GetWarpBeta(struct warp_pgen pgen, const Real rad, Real &warp_beta);
-
-// KOKKOS_INLINE_FUNCTION
-// static void GetWarpGamma(struct warp_pgen pgen, const Real rad, Real &warp_gamma);
-
-// KOKKOS_INLINE_FUNCTION
-// static void InverseWarpRot(struct warp_pgen pgen, const Real warp_beta, const Real warp_gamma, Real &xflat, Real &yflat, Real &zflat, const Real xwarp, const Real ywarp, const Real zwarp);
-
-// KOKKOS_INLINE_FUNCTION
-// static void WarpRot(struct warp_pgen pgen, const Real warp_beta, const Real warp_gamma, Real &xwarp, Real &ywarp, Real &zwarp, const Real xflat, const Real yflat, const Real zflat);
-
-// KOKKOS_INLINE_FUNCTION
-// static void GetUnwarpedCylCoord(struct warp_pgen pgen, Real &rad,Real &phi,Real &z,const Real rwarp,const Real thetawarp,const Real phiwarp);
-
-// KOKKOS_INLINE_FUNCTION
-// static void ComputePrimitives(struct warp_pgen pgen, Real xwarp, Real ywarp, Real zwarp, Real &rho, Real &pgas, Real &ux, Real &uy, Real &uz);
-
-// Useful container for physical parameters of the warped disc
-struct warp_pgen {
-    Real gm0, r0, rminmask, rmaxmask,thetaminmask,thetamaxmask,softening_len, rho0, d_slope, c0sq, s_slope, gamma_gas, beta, tau, alpha;
-    int relax_cs, damp_switch;
-    Real r_warp_mid, warp_beta0;
-    Real dfloor;
-    enum eos_enum {ideal, isothermal} eos_flag;
-    eos_enum eos_isothermal=isothermal;
-    eos_enum eos_ideal=ideal;
-    int error=0;
+    struct my_params {
+    Real gm0, r0, rho0, dslope, p0_over_r0, qslope, tcool, gamma_gas;
+    Real dfloor, rho_floor0, rho_floor_slope;
+    Real Omega0;
+    Real rs, smoothin, smoothtr, rfix;
+    Real Rmin, Ri, Ro, Rmax;
+    Real thmin, thi, tho, thmax;
+    Real rrigid, origid, rmagsph, denstar, ratmagfloor, ratmagfslope;
+    Real mm, b0, beta;
+    bool is_ideal;
+    static int bc_ix3, bc_ox3;
     };
 
-// Now store porblem parameters in a struct to be passed to functions for
-// more controlled access.
-warp_pgen disc_params;
+    my_params mp;
 
 } // End of namespace
+
+
+KOKKOS_INLINE_FUNCTION
+Real rho_floor(struct my_params mp, const Real r);
 
 // prototypes for user-defined BCs and source functions
 void FixedDiscBC(Mesh *pm);
@@ -129,120 +91,146 @@ void MySourceTerms(Mesh* pm, const Real bdt);
 
 void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
 
-    // Now enroll user source terms and boundary conditions if specified
-    if (user_srcs) {
-        user_srcs_func = MySourceTerms;
-     }
+    // // Now enroll user source terms and boundary conditions if specified
+    // if (user_srcs) {
+    //     user_srcs_func = MySourceTerms;
+    //     }
 
-    if (user_bcs) {
-        user_bcs_func = FixedDiscBC;
-    }
+    // if (user_bcs) {
+    //     user_bcs_func = FixedDiscBC;
+    // }
 
-    // If restarting then end initialisation here
-    if (restart) return;
+    // // If restarting then end initialisation here
+    // if (restart) return;
 
     // Read problem parameters from input file
-    // Get parameters for gravitatonal potential of softened central point mass
-    disc_params.gm0 = pin->GetOrAddReal("problem","GM_soft",0.0);
-    disc_params.r0 = pin->GetOrAddReal("problem","r0",1.0);
-    disc_params.softening_len = pin->GetOrAddReal("problem","softening_len",disc_params.r0/100.0);
-    disc_params.rminmask = pin->GetOrAddReal("problem","rminmask",0.0);
-    disc_params.rmaxmask = pin->GetOrAddReal("problem","rmaxmask",0.0);
-    disc_params.thetaminmask = pin->GetOrAddReal("problem","thetaminmask",0.0);
-    disc_params.thetamaxmask = pin->GetOrAddReal("problem","thetamaxmask",0.0);
 
-    // Get parameters for initial density
-    disc_params.rho0 = pin->GetReal("problem","rho0");
-    disc_params.d_slope = pin->GetOrAddReal("problem","d_slope",0.0);
-
-    // Get parameters of initial pressure and cooling parameters
-
-    // First extract the EOS - currently the can choose from 'isothermal' (globally) or 'ideal' (adiabatic)
-    disc_params.eos_flag = disc_params.eos_isothermal;
-    if (pin->GetString("hydro","eos").compare("isothermal") != 0) {
-        disc_params.eos_flag=disc_params.eos_ideal;
-        disc_params.c0sq = pin->GetOrAddReal("problem","c0sq",0.0025);
-        disc_params.s_slope = pin->GetOrAddReal("problem","s_slope",0.0);
-        disc_params.gamma_gas = pin->GetReal("hydro","gamma");
-        disc_params.relax_cs = pin->GetOrAddInteger("problem","relax_cs",0);
-        disc_params.beta = pin->GetReal("problem","beta");
-    } else {
-        disc_params.c0sq=SQR(pin->GetReal("hydro","iso_sound_speed"));
-    }
-
-    // Get parameters for velocity damping
-    disc_params.damp_switch = pin->GetOrAddInteger("problem","damp_switch",0);
-    disc_params.tau = pin->GetOrAddReal("problem","tau",0.1);
-
-    // Get parameters for alpha viscosity
-    disc_params.alpha =  pin->GetOrAddReal("problem","nu_iso",0.0);
-
-    // Get parameters for the warp profile
-    disc_params.r_warp_mid =  pin->GetOrAddReal("problem","r_warp_mid",0.0);
-    disc_params.warp_beta0 =  pin->GetOrAddReal("problem","warp_beta0",0.0);
-
-    // Set density floor
-    Real float_min = std::numeric_limits<float>::min();
-    disc_params.dfloor=pin->GetOrAddReal("hydro","dfloor",(1024*(float_min)));
-
-    // Capture variables for kernel - e.g. indices for looping over the meshblocks and the size of the meshblocks.
-    auto &indcs = pmy_mesh_->mb_indcs;
-    int &is = indcs.is; int &ie = indcs.ie;
-    int &js = indcs.js; int &je = indcs.je;
-    int &ks = indcs.ks; int &ke = indcs.ke;
     MeshBlockPack *pmbp = pmy_mesh_->pmb_pack;
-    auto &size = pmbp->pmb->mb_size;
+    EOS_Data &eos = pmbp->pmhd->peos->eos_data;
 
-    // Initialise a pointer to the disc parameter structure   
-    auto disc_params_ = disc_params;
+    mp.beta = pin->GetReal("problem","beta");
+    mp.denstar = pin->GetOrAddReal("problem","denstar",0.0);
+    mp.dslope = pin->GetOrAddReal("problem","dslope",0.0);
+    mp.gm0 = 1.0;
+    mp.is_ideal = eos.is_ideal;
+    mp.origid = pin->GetOrAddReal("problem","origid",0.0);
+    mp.p0_over_r0 = pin->GetOrAddReal("problem","p0_over_r0",0.0025);
+    mp.qslope = pin->GetOrAddReal("problem","qslope",0.0);
+    mp.ratmagfloor = pin->GetOrAddReal("problem","ratmagfloor",1.0e6);
+    mp.ratmagfslope = pin->GetOrAddReal("problem","ratmagfslope", 5.5);
+    mp.rfix = pin->GetOrAddReal("problem", "rfix",0.1);
+    mp.rho0 = pin->GetReal("problem","rho0");
+    mp.rho_floor0 = pin->GetReal("problem","rho_floor0");
+    mp.rho_floor_slope = pin->GetOrAddReal("problem","rho_floor_slope",0.0);
+    mp.rrigid = pin->GetOrAddReal("problem","rrigid",0.0);
+    mp.rmagsph = pin->GetOrAddReal("problem","rmagsph",0.0);
+    mp.rs = pin->GetOrAddReal("problem", "rstar",0.0);
+    mp.smoothtr = pin->GetOrAddReal("problem","smoothtr",0.0);
 
-    // Select either Hydro or MHD and extract the arrays - set on the device specifically since this is where the calculations
-    // are going to be done anyway. 
-    DvceArray5D<Real> u0_, w0_;
-    if (pmbp->phydro != nullptr) {
-        u0_ = pmbp->phydro->u0;
-        w0_ = pmbp->phydro->w0;
-    }
+    // If magnetic fields are enabled TODO: implement check
+    mp.mm = pin->GetOrAddReal("problem","mm",0.0);  // Read in the magnetic moment
 
-    // Loop over array and assign the quantities.
-    par_for("pgen_UserProblem",DevExeSpace(),0,(pmbp->nmb_thispack-1),ks,ke,js,je,is,ie,
-    KOKKOS_LAMBDA(int m,int k,int j,int i) {
-        Real &x1min = size.d_view(m).x1min;
-        Real &x1max = size.d_view(m).x1max;
-        int nx1 = indcs.nx1;
-        Real xwarp = CellCenterX(i-is, nx1, x1min, x1max);
+    // // Get parameters for gravitatonal potential of softened central point mass
+    // disc_params.gm0 = pin->GetOrAddReal("problem","GM_soft",0.0);
+    // disc_params.r0 = pin->GetOrAddReal("problem","r0",1.0);
+    // disc_params.softening_len = pin->GetOrAddReal("problem","softening_len",disc_params.r0/100.0);
+    // disc_params.rminmask = pin->GetOrAddReal("problem","rminmask",0.0);
+    // disc_params.rmaxmask = pin->GetOrAddReal("problem","rmaxmask",0.0);
+    // disc_params.thetaminmask = pin->GetOrAddReal("problem","thetaminmask",0.0);
+    // disc_params.thetamaxmask = pin->GetOrAddReal("problem","thetamaxmask",0.0);
 
-        Real &x2min = size.d_view(m).x2min;
-        Real &x2max = size.d_view(m).x2max;
-        int nx2 = indcs.nx2;
-        Real ywarp = CellCenterX(j-js, nx2, x2min, x2max);
+    // // Get parameters for initial density
+    // disc_params.rho0 = pin->GetReal("problem","rho0");
+    // disc_params.d_slope = pin->GetOrAddReal("problem","d_slope",0.0);
 
-        Real &x3min = size.d_view(m).x3min;
-        Real &x3max = size.d_view(m).x3max;
-        int nx3 = indcs.nx3;
-        Real zwarp = CellCenterX(k-ks, nx3, x3min, x3max);
+    // // Get parameters of initial pressure and cooling parameters
 
-        // Declare the primtive variables
-        Real den(0.0), pgas(0.0), ux(0.0), uy(0.0), uz(0.0);
+    // // First extract the EOS - currently the can choose from 'isothermal' (globally) or 'ideal' (adiabatic)
+    // disc_params.eos_flag = disc_params.eos_isothermal;
+    // if (pin->GetString("hydro","eos").compare("isothermal") != 0) {
+    //     disc_params.eos_flag=disc_params.eos_ideal;
+    //     disc_params.c0sq = pin->GetOrAddReal("problem","c0sq",0.0025);
+    //     disc_params.s_slope = pin->GetOrAddReal("problem","s_slope",0.0);
+    //     disc_params.gamma_gas = pin->GetReal("hydro","gamma");
+    //     disc_params.relax_cs = pin->GetOrAddInteger("problem","relax_cs",0);
+    //     disc_params.beta = pin->GetReal("problem","beta");
+    // } else {
+    //     disc_params.c0sq=SQR(pin->GetReal("hydro","iso_sound_speed"));
+    // }
 
-        // Now compute the warped primitive variables at this location
-        ComputePrimitives(disc_params_,xwarp, ywarp, zwarp, den, pgas, ux, uy, uz);
+    // // Get parameters for velocity damping
+    // disc_params.damp_switch = pin->GetOrAddInteger("problem","damp_switch",0);
+    // disc_params.tau = pin->GetOrAddReal("problem","tau",0.1);
 
-        // Now set the conserved variables using the primitive variables
-        u0_(m,IDN,k,j,i) = den;
-        u0_(m,IM1,k,j,i) = den*ux;
-        u0_(m,IM2,k,j,i) = den*uy;
-        u0_(m,IM3,k,j,i) = den*uz;
-        if (disc_params_.eos_flag != disc_params_.eos_isothermal) {
-            u0_(m,IEN,k,j,i) = pgas/(disc_params_.gamma_gas - 1.0)+0.5*(SQR(ux)+SQR(uy)+ SQR(uz))/den;
-        }
-    });
+    // // Get parameters for alpha viscosity
+    // disc_params.alpha =  pin->GetOrAddReal("problem","nu_iso",0.0);
 
-    // Check that no errors were flagged during the initialisation
-    if (disc_params_.error == 1) {
-        std::cout << "Error: Negative azimuthal velocity detected. Check your input parameters." << std::endl;
-        exit(1);
-    }
+    // // Get parameters for the warp profile
+    // disc_params.r_warp_mid =  pin->GetOrAddReal("problem","r_warp_mid",0.0);
+    // disc_params.warp_beta0 =  pin->GetOrAddReal("problem","warp_beta0",0.0);
+
+    // // Set density floor
+    // Real float_min = std::numeric_limits<float>::min();
+    // disc_params.dfloor=pin->GetOrAddReal("hydro","dfloor",(1024*(float_min)));
+
+    // // Capture variables for kernel - e.g. indices for looping over the meshblocks and the size of the meshblocks.
+    // auto &indcs = pmy_mesh_->mb_indcs;
+    // int &is = indcs.is; int &ie = indcs.ie;
+    // int &js = indcs.js; int &je = indcs.je;
+    // int &ks = indcs.ks; int &ke = indcs.ke;
+    // MeshBlockPack *pmbp = pmy_mesh_->pmb_pack;
+    // auto &size = pmbp->pmb->mb_size;
+
+    // // Initialise a pointer to the disc parameter structure   
+    // auto disc_params_ = disc_params;
+
+    // // Select either Hydro or MHD and extract the arrays - set on the device specifically since this is where the calculations
+    // // are going to be done anyway. 
+    // DvceArray5D<Real> u0_, w0_;
+    // if (pmbp->phydro != nullptr) {
+    //     u0_ = pmbp->phydro->u0;
+    //     w0_ = pmbp->phydro->w0;
+    // }
+
+    // // Loop over array and assign the quantities.
+    // par_for("pgen_UserProblem",DevExeSpace(),0,(pmbp->nmb_thispack-1),ks,ke,js,je,is,ie,
+    // KOKKOS_LAMBDA(int m,int k,int j,int i) {
+    //     Real &x1min = size.d_view(m).x1min;
+    //     Real &x1max = size.d_view(m).x1max;
+    //     int nx1 = indcs.nx1;
+    //     Real xwarp = CellCenterX(i-is, nx1, x1min, x1max);
+
+    //     Real &x2min = size.d_view(m).x2min;
+    //     Real &x2max = size.d_view(m).x2max;
+    //     int nx2 = indcs.nx2;
+    //     Real ywarp = CellCenterX(j-js, nx2, x2min, x2max);
+
+    //     Real &x3min = size.d_view(m).x3min;
+    //     Real &x3max = size.d_view(m).x3max;
+    //     int nx3 = indcs.nx3;
+    //     Real zwarp = CellCenterX(k-ks, nx3, x3min, x3max);
+
+    //     // Declare the primtive variables
+    //     Real den(0.0), pgas(0.0), ux(0.0), uy(0.0), uz(0.0);
+
+    //     // Now compute the warped primitive variables at this location
+    //     ComputePrimitives(disc_params_,xwarp, ywarp, zwarp, den, pgas, ux, uy, uz);
+
+    //     // Now set the conserved variables using the primitive variables
+    //     u0_(m,IDN,k,j,i) = den;
+    //     u0_(m,IM1,k,j,i) = den*ux;
+    //     u0_(m,IM2,k,j,i) = den*uy;
+    //     u0_(m,IM3,k,j,i) = den*uz;
+    //     if (disc_params_.eos_flag != disc_params_.eos_isothermal) {
+    //         u0_(m,IEN,k,j,i) = pgas/(disc_params_.gamma_gas - 1.0)+0.5*(SQR(ux)+SQR(uy)+ SQR(uz))/den;
+    //     }
+    // });
+
+    // // Check that no errors were flagged during the initialisation
+    // if (disc_params_.error == 1) {
+    //     std::cout << "Error: Negative azimuthal velocity detected. Check your input parameters." << std::endl;
+    //     exit(1);
+    // }
 
     return; // END OF ProblemGenerator::UserProblem()
 }
@@ -257,13 +245,109 @@ namespace {
     //----------------------------------------------------------------------------------------
     //! Transform from cartesian to cylindrical coordinates
     KOKKOS_INLINE_FUNCTION
-    static void CartToCylCoord(struct warp_pgen pgen, Real &rad, Real &phi, Real &z, const Real xcart, const Real ycart, const Real zcart) {
-    
-    rad = std::sqrt(xcart*xcart+ycart*ycart);
-    phi = std::atan2(ycart,xcart);
-    z = zcart;
-    
-    return;
+    static void GetCylCoord(struct my_params mp, Real &rad,Real &phi,Real &z,Real &x1,Real &x2,Real &x3) {
+        rad=sqrt(x1*x1 + x2*x2);
+        phi=atan2(x2,x1);
+        z=x3;
+        return;
+    }
+
+    //----------------------------------------------------------------------------------------
+    //! Transform from cartesian to spherical coordinates
+    KOKKOS_INLINE_FUNCTION
+    static void GetSphCoord(struct my_params mp, Real &rc,Real &theta,Real &phi, Real &x1, Real &x2, Real &x3) {
+        rc = sqrt(x1*x1 + x2*x2 + x3*x3);
+        theta = acos(x3/rc);
+        phi = atan2(x2,x1);
+        return;
+    }
+
+    //----------------------------------------------------------------------------------------
+    KOKKOS_INLINE_FUNCTION
+    static Real DenProfileCyl(struct my_params mp, const Real rad, const Real phi, const Real z, int k, int j, int i) {
+        
+        // Compute the density profile in cylindrical coordinates
+        // Vertical hydrostatic equilibrium (Nelson et al. 2013) 
+        Real den;
+        Real r = fmax(rad, mp.rs);
+        Real p_over_r = mp.p0_over_r0;
+        if (mp.is_ideal) p_over_r = PoverR(mp, r, phi, z);
+        Real denmid = mp.rho0*std::pow(r/mp.r0,mp.dslope);
+        Real dentem = denmid*std::exp(mp.gm0/p_over_r*(1./std::sqrt(SQR(r)+SQR(z))-1./r));
+        den = dentem;
+
+        Real rc = sqrt(rad*rad+z*z);  // spherical radius
+        Real sinsq = rad*rad/rc/rc;
+
+        // For region inside magnetosphere, apply exponential tapering
+        if (rc<mp.rmagsph) {
+            den = den*exp(-SQR((rc-mp.rmagsph)/mp.smoothtr));
+            
+            // Add the stellar density profile component
+            if (mp.is_ideal) p_over_r = PoverR(mp, mp.rs, phi, z);
+            // Pressure inside rs
+            Real pre=mp.denstar*p_over_r;
+            Real rint = 0;
+            Real dr = mp.rs/100.;
+            
+            while(rint<rc) {
+
+                // Integrate pressure balance outwards from star assuming constant temperature
+                if(rint<mp.rs){
+                    pre = pre + dr*mp.origid*mp.origid*rint*sinsq*pre/p_over_r; // Note the ridid rotation needs to be counterbalanced with additional pressure.
+                } else {
+                    pre = pre - dr*mp.gm0/rint/rint*(rint-mp.rs)*
+                                (rint-mp.rs)/((rint-mp.rs)*(rint-mp.rs)+mp.smoothtr*mp.smoothtr)*
+                                pre/p_over_r + dr*mp.origid*mp.origid*rint*sinsq*pre/p_over_r;
+                }
+                rint = rint + dr;
+            }
+            
+            // Add on stellar contribution to the disk contribution
+            den += pre/p_over_r;
+        }
+        // Apply the density floor
+        den = fmax(den,rho_floor(mp,rc));
+        return den;
+    }
+
+    //----------------------------------------------------------------------------------------
+    KOKKOS_INLINE_FUNCTION
+    static Real PoverR(struct my_params mp, const Real rad, const Real phi, const Real z) {
+        Real poverr;
+        Real r = fmax(rad, mp.rfix);
+        poverr = mp.p0_over_r0*std::pow(r/mp.r0, mp.qslope);
+        return poverr;
+    }
+
+    //----------------------------------------------------------------------------------------
+    KOKKOS_INLINE_FUNCTION
+    static void VelProfileCyl(struct my_params mp, const Real rad, const Real phi, const Real z, Real &v1, Real &v2, Real &v3) {
+        
+        Real r = fmax(rad, mp.rs);
+        Real p_over_r = PoverR(mp, r, phi, z);
+        Real vel = (mp.dslope+mp.qslope)*p_over_r/(mp.gm0/r) + (1.0+mp.qslope) - mp.qslope*r/sqrt(r*r+z*z);
+        vel = sqrt(mp.gm0/r)*sqrt(vel);
+        Real rc = sqrt(rad*rad+z*z);
+        if (rc<mp.rmagsph) vel = vel*exp(-SQR((rc-mp.rmagsph)/mp.smoothtr));
+        if (rc<=mp.rrigid) vel += mp.origid*rad;
+
+        v1=-vel*sin(phi);
+        v2=+vel*cos(phi);
+        v3=0.0;
+
+        return;
+    }
+
+} // End of namespace functions
+
+    KOKKOS_INLINE_FUNCTION
+    Real rho_floor(struct my_params mp, Real rc) {
+        Real rhofloor = 0.0;
+        if (rc > mp.rs) rhofloor = mp.rho_floor0*pow(rc/mp.r0, mp.rho_floor_slope);
+        if (mp.mm != 0. && rc > mp.rs) rhofloor += 4.*mp.rho0*mp.mm*mp.mm/mp.beta/mp.ratmagfloor*
+                                                pow((mp.r0/rc),mp.ratmagfslope);
+        return fmax(rhofloor,mp.dfloor);
     }
         
     // //----------------------------------------------------------------------------------------
@@ -628,9 +712,9 @@ namespace {
     //         }  
         
     //     return;      
-    }
+    // }
 
-} // End of namespace
+// } // End of namespace
 
 //----------------------------------------------------------------------------------------
 //! Below we will define the custom user defined source terms and boundary conditions.
@@ -641,124 +725,124 @@ namespace {
 
 void MySourceTerms(Mesh* pm, const Real bdt) {
 
-    // Capture variables for kernel - e.g. indices for looping over the meshblocks and the size of the meshblocks.
-    auto &indcs = pm->mb_indcs;
-    int &is = indcs.is; int &ie = indcs.ie;
-    int &js = indcs.js; int &je = indcs.je;
-    int &ks = indcs.ks; int &ke = indcs.ke;
-    MeshBlockPack *pmbp = pm->pmb_pack;
-    auto &size = pmbp->pmb->mb_size;
+    // // Capture variables for kernel - e.g. indices for looping over the meshblocks and the size of the meshblocks.
+    // auto &indcs = pm->mb_indcs;
+    // int &is = indcs.is; int &ie = indcs.ie;
+    // int &js = indcs.js; int &je = indcs.je;
+    // int &ks = indcs.ks; int &ke = indcs.ke;
+    // MeshBlockPack *pmbp = pm->pmb_pack;
+    // auto &size = pmbp->pmb->mb_size;
 
-    // Now set a pointer to the disc parameter struct for use in this function
-    auto disc_params_ = disc_params;
+    // // Now set a pointer to the disc parameter struct for use in this function
+    // auto disc_params_ = disc_params;
 
-    DvceArray5D<Real> u0_, w0_;
-    if (pmbp->phydro != nullptr) {
-        u0_ = pmbp->phydro->u0;
-        w0_ = pmbp->phydro->w0;
-    }
+    // DvceArray5D<Real> u0_, w0_;
+    // if (pmbp->phydro != nullptr) {
+    //     u0_ = pmbp->phydro->u0;
+    //     w0_ = pmbp->phydro->w0;
+    // }
 
-    //  Initialize density and momenta - need to specify ICs in terms of the conserved quantities.
-    par_for("pgen_UserProblem",DevExeSpace(),0,(pmbp->nmb_thispack-1),ks,ke,js,je,is,ie,
-    KOKKOS_LAMBDA(int m,int k,int j,int i) {
-        Real &x1min = size.d_view(m).x1min;
-        Real &x1max = size.d_view(m).x1max;
-        int nx1 = indcs.nx1;
-        Real x = CellCenterX(i-is, nx1, x1min, x1max);
+    // //  Initialize density and momenta - need to specify ICs in terms of the conserved quantities.
+    // par_for("pgen_UserProblem",DevExeSpace(),0,(pmbp->nmb_thispack-1),ks,ke,js,je,is,ie,
+    // KOKKOS_LAMBDA(int m,int k,int j,int i) {
+    //     Real &x1min = size.d_view(m).x1min;
+    //     Real &x1max = size.d_view(m).x1max;
+    //     int nx1 = indcs.nx1;
+    //     Real x = CellCenterX(i-is, nx1, x1min, x1max);
 
-        Real &x2min = size.d_view(m).x2min;
-        Real &x2max = size.d_view(m).x2max;
-        int nx2 = indcs.nx2;
-        Real y = CellCenterX(j-js, nx2, x2min, x2max);
+    //     Real &x2min = size.d_view(m).x2min;
+    //     Real &x2max = size.d_view(m).x2max;
+    //     int nx2 = indcs.nx2;
+    //     Real y = CellCenterX(j-js, nx2, x2min, x2max);
 
-        Real &x3min = size.d_view(m).x3min;
-        Real &x3max = size.d_view(m).x3max;
-        int nx3 = indcs.nx3;
-        Real z = CellCenterX(k-ks, nx3, x3min, x3max);
+    //     Real &x3min = size.d_view(m).x3min;
+    //     Real &x3max = size.d_view(m).x3max;
+    //     int nx3 = indcs.nx3;
+    //     Real z = CellCenterX(k-ks, nx3, x3min, x3max);
 
-        // Loop over the array elements 
-        Real sph_rad (0.0), sph_theta (0.0), sph_phi(0.0); // Initialise a spherical coordinates
-        Real cyl_rad (0.0); // Initialise a cylindrical radial coordinate
-        Real csq_target (0.0); // Initialise a target sound speed sqr
-        Real csq (0.0); // Initialise the actual sound speed sqr
+    //     // Loop over the array elements 
+    //     Real sph_rad (0.0), sph_theta (0.0), sph_phi(0.0); // Initialise a spherical coordinates
+    //     Real cyl_rad (0.0); // Initialise a cylindrical radial coordinate
+    //     Real csq_target (0.0); // Initialise a target sound speed sqr
+    //     Real csq (0.0); // Initialise the actual sound speed sqr
 
-        // Now perform the action of the source terms in the loop.
-        CartToSphCoord(disc_params_,sph_rad,sph_theta,sph_phi,x,y,z);  
+    //     // Now perform the action of the source terms in the loop.
+    //     CartToSphCoord(disc_params_,sph_rad,sph_theta,sph_phi,x,y,z);  
 
-        cyl_rad = std::sqrt(SQR(x)+SQR(y));
+    //     cyl_rad = std::sqrt(SQR(x)+SQR(y));
 
-        // Softened gravitational potential source for the central body -->
-        if (disc_params_.gm0 > 0.0){
-            Real ax(0.0), ay(0.0), az(0.0);
+    //     // Softened gravitational potential source for the central body -->
+    //     if (disc_params_.gm0 > 0.0){
+    //         Real ax(0.0), ay(0.0), az(0.0);
             
-            // Plummer softening
-            Real acc = -disc_params_.gm0/pow(SQR(sph_rad)+SQR(disc_params_.softening_len),1.5);
-            ax = acc*x;
-            ay = acc*y;
-            az = acc*z;
+    //         // Plummer softening
+    //         Real acc = -disc_params_.gm0/pow(SQR(sph_rad)+SQR(disc_params_.softening_len),1.5);
+    //         ax = acc*x;
+    //         ay = acc*y;
+    //         az = acc*z;
 
-            // Update the momentum source terms
-            u0_(m,IM1,k,j,i) += bdt*w0_(m,IDN,k,j,i)*ax;
-            u0_(m,IM2,k,j,i) += bdt*w0_(m,IDN,k,j,i)*ay;
-            u0_(m,IM3,k,j,i) += bdt*w0_(m,IDN,k,j,i)*az;
+    //         // Update the momentum source terms
+    //         u0_(m,IM1,k,j,i) += bdt*w0_(m,IDN,k,j,i)*ax;
+    //         u0_(m,IM2,k,j,i) += bdt*w0_(m,IDN,k,j,i)*ay;
+    //         u0_(m,IM3,k,j,i) += bdt*w0_(m,IDN,k,j,i)*az;
 
-            // Update the total energy source terms
-            if (disc_params_.eos_flag != disc_params_.eos_isothermal){
-                u0_(m,IEN,k,j,i) += bdt*w0_(m,IDN,k,j,i)*(w0_(m,IVX,k,j,i)*ax+w0_(m,IVY,k,j,i)*ay+w0_(m,IVZ,k,j,i)*az);
-                } 
-            }
+    //         // Update the total energy source terms
+    //         if (disc_params_.eos_flag != disc_params_.eos_isothermal){
+    //             u0_(m,IEN,k,j,i) += bdt*w0_(m,IDN,k,j,i)*(w0_(m,IVX,k,j,i)*ax+w0_(m,IVY,k,j,i)*ay+w0_(m,IVZ,k,j,i)*az);
+    //             } 
+    //         }
             
-        // Cooling source terms -->
-        if (disc_params_.relax_cs == 1){
-        csq_target = CSoundSqSph(disc_params_,sph_rad,sph_theta,sph_phi);
-        // Compute the local sound speed squared
-        csq = (disc_params_.gamma_gas-1.0)*w0_(m,IEN,k,j,i)/w0_(m,IDN,k,j,i);
-        if (csq != csq_target) {
-            u0_(m,IEN,k,j,i) -= bdt/(disc_params_.beta*pow(sph_rad/disc_params_.r0,3.0/2.0))*w0_(m,IDN,k,j,i)*(csq - csq_target)/(disc_params_.gamma_gas - 1.0);
-            }
-        } else if (disc_params_.relax_cs == 2){
-        csq_target = CSoundSqCyl(disc_params_,cyl_rad, 0.0, 0.0);
-        // Compute the local sound speed squared
-        csq = (disc_params_.gamma_gas-1.0)*w0_(m,IEN,k,j,i)/w0_(m,IDN,k,j,i);
-        if (csq != csq_target) {
-            u0_(m,IEN,k,j,i) -= bdt/(disc_params_.beta*pow(cyl_rad/disc_params_.r0,3.0/2.0))*w0_(m,IDN,k,j,i)*(csq - csq_target)/(disc_params_.gamma_gas - 1.0);
-            }
-        }
+    //     // Cooling source terms -->
+    //     if (disc_params_.relax_cs == 1){
+    //     csq_target = CSoundSqSph(disc_params_,sph_rad,sph_theta,sph_phi);
+    //     // Compute the local sound speed squared
+    //     csq = (disc_params_.gamma_gas-1.0)*w0_(m,IEN,k,j,i)/w0_(m,IDN,k,j,i);
+    //     if (csq != csq_target) {
+    //         u0_(m,IEN,k,j,i) -= bdt/(disc_params_.beta*pow(sph_rad/disc_params_.r0,3.0/2.0))*w0_(m,IDN,k,j,i)*(csq - csq_target)/(disc_params_.gamma_gas - 1.0);
+    //         }
+    //     } else if (disc_params_.relax_cs == 2){
+    //     csq_target = CSoundSqCyl(disc_params_,cyl_rad, 0.0, 0.0);
+    //     // Compute the local sound speed squared
+    //     csq = (disc_params_.gamma_gas-1.0)*w0_(m,IEN,k,j,i)/w0_(m,IDN,k,j,i);
+    //     if (csq != csq_target) {
+    //         u0_(m,IEN,k,j,i) -= bdt/(disc_params_.beta*pow(cyl_rad/disc_params_.r0,3.0/2.0))*w0_(m,IDN,k,j,i)*(csq - csq_target)/(disc_params_.gamma_gas - 1.0);
+    //         }
+    //     }
         
-        // Cylindrical equilibrium velocity damping source terms -->
-        if (disc_params_.damp_switch == 1) {
-        //  Now damp the z vertical velocity
-        u0_(m,IM3,k,j,i) -= bdt/(disc_params_.tau*pow(cyl_rad/disc_params_.r0,3.0/2.0))*(w0_(m,IDN,k,j,i)*w0_(m,IVZ,k,j,i)-0.0);
-        }
+    //     // Cylindrical equilibrium velocity damping source terms -->
+    //     if (disc_params_.damp_switch == 1) {
+    //     //  Now damp the z vertical velocity
+    //     u0_(m,IM3,k,j,i) -= bdt/(disc_params_.tau*pow(cyl_rad/disc_params_.r0,3.0/2.0))*(w0_(m,IDN,k,j,i)*w0_(m,IVZ,k,j,i)-0.0);
+    //     }
 
-        // Finally if in the masked region set the conserved and primitive variables to the initial conditions
-        enum Masking {nomask,innermask,outermask};
-        if ((MaskingCartCoords(disc_params_,x,y,z)==innermask) || (MaskingCartCoords(disc_params_,x,y,z)==outermask)){
+    //     // Finally if in the masked region set the conserved and primitive variables to the initial conditions
+    //     enum Masking {nomask,innermask,outermask};
+    //     if ((MaskingCartCoords(disc_params_,x,y,z)==innermask) || (MaskingCartCoords(disc_params_,x,y,z)==outermask)){
 
-            // Get the primitive variables
-            Real den(0.0), pgas(0.0), ux(0.0), uy(0.0), uz(0.0);
-            ComputePrimitives(disc_params_,x,y,z,den,pgas,ux,uy,uz);
+    //         // Get the primitive variables
+    //         Real den(0.0), pgas(0.0), ux(0.0), uy(0.0), uz(0.0);
+    //         ComputePrimitives(disc_params_,x,y,z,den,pgas,ux,uy,uz);
 
-            // Now set the conserved variables using the primitive variables
-            u0_(m,IDN,k,j,i) = den;
-            u0_(m,IM1,k,j,i) = den*ux;
-            u0_(m,IM2,k,j,i) = den*uy;
-            u0_(m,IM3,k,j,i) = den*uz;
-            if (disc_params_.eos_flag != disc_params_.eos_isothermal) {
-                u0_(m,IEN,k,j,i) = pgas/(disc_params_.gamma_gas - 1.0)+0.5*(SQR(ux)+SQR(uy)+ SQR(uz))/den;
-            }
+    //         // Now set the conserved variables using the primitive variables
+    //         u0_(m,IDN,k,j,i) = den;
+    //         u0_(m,IM1,k,j,i) = den*ux;
+    //         u0_(m,IM2,k,j,i) = den*uy;
+    //         u0_(m,IM3,k,j,i) = den*uz;
+    //         if (disc_params_.eos_flag != disc_params_.eos_isothermal) {
+    //             u0_(m,IEN,k,j,i) = pgas/(disc_params_.gamma_gas - 1.0)+0.5*(SQR(ux)+SQR(uy)+ SQR(uz))/den;
+    //         }
 
-            // Also set the primitive variables
-            w0_(m,IDN,k,j,i) = den;
-            w0_(m,IVX,k,j,i) = ux;
-            w0_(m,IVY,k,j,i) = uy;
-            w0_(m,IVZ,k,j,i) = uz;
-            if (disc_params_.eos_flag != disc_params_.eos_isothermal) {
-                w0_(m,IEN,k,j,i) = pgas/(disc_params_.gamma_gas - 1.0);
-            }
-        }
+    //         // Also set the primitive variables
+    //         w0_(m,IDN,k,j,i) = den;
+    //         w0_(m,IVX,k,j,i) = ux;
+    //         w0_(m,IVY,k,j,i) = uy;
+    //         w0_(m,IVZ,k,j,i) = uz;
+    //         if (disc_params_.eos_flag != disc_params_.eos_isothermal) {
+    //             w0_(m,IEN,k,j,i) = pgas/(disc_params_.gamma_gas - 1.0);
+    //         }
+    //     }
 
-    });
+    // });
 
     return;
 }
@@ -770,249 +854,201 @@ void MySourceTerms(Mesh* pm, const Real bdt) {
 
 void FixedDiscBC(Mesh *pm) {
 
-  // Start by extracting the mesh block and cell information 
-  auto &indcs = pm->mb_indcs;
-  auto &size = pm->pmb_pack->pmb->mb_size;
-  auto &coord = pm->pmb_pack->pcoord->coord_data;
-  int &ng = indcs.ng;
-  int n1 = indcs.nx1 + 2*ng;
-  int n2 = (indcs.nx2 > 1)? (indcs.nx2 + 2*ng) : 1;
-  int n3 = (indcs.nx3 > 1)? (indcs.nx3 + 2*ng) : 1;
-  int &is = indcs.is;  int &ie  = indcs.ie;
-  int &js = indcs.js;  int &je  = indcs.je;
-  int &ks = indcs.ks;  int &ke  = indcs.ke;
-  auto &mb_bcs = pm->pmb_pack->pmb->mb_bcs;
+//   // Start by extracting the mesh block and cell information 
+//   auto &indcs = pm->mb_indcs;
+//   auto &size = pm->pmb_pack->pmb->mb_size;
+//   auto &coord = pm->pmb_pack->pcoord->coord_data;
+//   int &ng = indcs.ng;
+//   int n1 = indcs.nx1 + 2*ng;
+//   int n2 = (indcs.nx2 > 1)? (indcs.nx2 + 2*ng) : 1;
+//   int n3 = (indcs.nx3 > 1)? (indcs.nx3 + 2*ng) : 1;
+//   int &is = indcs.is;  int &ie  = indcs.ie;
+//   int &js = indcs.js;  int &je  = indcs.je;
+//   int &ks = indcs.ks;  int &ke  = indcs.ke;
+//   auto &mb_bcs = pm->pmb_pack->pmb->mb_bcs;
 
-  // Initialise a pointer to the disc parameter structure   
-  auto disc_params_ = disc_params;
+//   // Initialise a pointer to the disc parameter structure   
+//   auto disc_params_ = disc_params;
 
-  int nmb = pm->pmb_pack->nmb_thispack;
+//   int nmb = pm->pmb_pack->nmb_thispack;
 
-  // Select either Hydro or MHD arrays
-  DvceArray5D<Real> u0_, w0_;
-  if (pm->pmb_pack->phydro != nullptr) {
-    u0_ = pm->pmb_pack->phydro->u0;
-    w0_ = pm->pmb_pack->phydro->w0;
-  }
+//   // Select either Hydro or MHD arrays
+//   DvceArray5D<Real> u0_, w0_;
+//   if (pm->pmb_pack->phydro != nullptr) {
+//     u0_ = pm->pmb_pack->phydro->u0;
+//     w0_ = pm->pmb_pack->phydro->w0;
+//   }
 
-  // X1 BOUNDARY CONDITIONS ---------------> 
+//   // X1 BOUNDARY CONDITIONS ---------------> 
 
-  // Start off by converting all the conservative variables to primitives so everything is synchronised
-  pm->pmb_pack->phydro->peos->ConsToPrim(u0_,w0_,false,is-ng,is-1,0,(n2-1),0,(n3-1));
-  pm->pmb_pack->phydro->peos->ConsToPrim(u0_,w0_,false,ie+1,ie+ng,0,(n2-1),0,(n3-1));
-  par_for("fixed_x1", DevExeSpace(),0,(nmb-1),0,(n3-1),0,(n2-1),0,(ng-1),
-  KOKKOS_LAMBDA(int m, int k, int j, int i) {
+//   // Start off by converting all the conservative variables to primitives so everything is synchronised
+//   pm->pmb_pack->phydro->peos->ConsToPrim(u0_,w0_,false,is-ng,is-1,0,(n2-1),0,(n3-1));
+//   pm->pmb_pack->phydro->peos->ConsToPrim(u0_,w0_,false,ie+1,ie+ng,0,(n2-1),0,(n3-1));
+//   par_for("fixed_x1", DevExeSpace(),0,(nmb-1),0,(n3-1),0,(n2-1),0,(ng-1),
+//   KOKKOS_LAMBDA(int m, int k, int j, int i) {
 
-    // Extract coordinates at inner x1 boundary on each meshblock in the pack
-    Real &x1min = size.d_view(m).x1min;
-    Real &x1max = size.d_view(m).x1max;
-    Real xwarp = CellCenterX(i-is, indcs.nx1, x1min, x1max);
+//     // Extract coordinates at inner x1 boundary on each meshblock in the pack
+//     Real &x1min = size.d_view(m).x1min;
+//     Real &x1max = size.d_view(m).x1max;
+//     Real xwarp = CellCenterX(i-is, indcs.nx1, x1min, x1max);
 
-    Real &x2min = size.d_view(m).x2min;
-    Real &x2max = size.d_view(m).x2max;
-    Real ywarp = CellCenterX(j-js, indcs.nx2, x2min, x2max);
+//     Real &x2min = size.d_view(m).x2min;
+//     Real &x2max = size.d_view(m).x2max;
+//     Real ywarp = CellCenterX(j-js, indcs.nx2, x2min, x2max);
 
-    Real &x3min = size.d_view(m).x3min;
-    Real &x3max = size.d_view(m).x3max;
-    Real zwarp = CellCenterX(k-ks, indcs.nx3, x3min, x3max);
+//     Real &x3min = size.d_view(m).x3min;
+//     Real &x3max = size.d_view(m).x3max;
+//     Real zwarp = CellCenterX(k-ks, indcs.nx3, x3min, x3max);
 
-    Real den, pgas, ux, uy, uz;
-    // Inner x1 boundary
-    if (mb_bcs.d_view(m,BoundaryFace::inner_x1) == BoundaryFlag::user) {
-        // Compute the warped primitive variables at this location
-        ComputePrimitives(disc_params_,xwarp, ywarp, zwarp, den, pgas, ux, uy, uz);
+//     Real den, pgas, ux, uy, uz;
+//     // Inner x1 boundary
+//     if (mb_bcs.d_view(m,BoundaryFace::inner_x1) == BoundaryFlag::user) {
+//         // Compute the warped primitive variables at this location
+//         ComputePrimitives(disc_params_,xwarp, ywarp, zwarp, den, pgas, ux, uy, uz);
 
-        // Now set the conserved variables using the primitive variables
-        w0_(m,IDN,k,j,i) = den;
-        w0_(m,IVX,k,j,i) = ux;
-        w0_(m,IVY,k,j,i) = uy;
-        w0_(m,IVZ,k,j,i) = uz;
-        if (disc_params_.eos_flag != disc_params_.eos_isothermal) {
-            w0_(m,IEN,k,j,i) = pgas/(disc_params_.gamma_gas - 1.0);
-        }
-    }
+//         // Now set the conserved variables using the primitive variables
+//         w0_(m,IDN,k,j,i) = den;
+//         w0_(m,IVX,k,j,i) = ux;
+//         w0_(m,IVY,k,j,i) = uy;
+//         w0_(m,IVZ,k,j,i) = uz;
+//         if (disc_params_.eos_flag != disc_params_.eos_isothermal) {
+//             w0_(m,IEN,k,j,i) = pgas/(disc_params_.gamma_gas - 1.0);
+//         }
+//     }
 
-    // Outer x1 boundary
-    xwarp = CellCenterX((ie+i+1)-is, indcs.nx1, x1min, x1max);
+//     // Outer x1 boundary
+//     xwarp = CellCenterX((ie+i+1)-is, indcs.nx1, x1min, x1max);
 
-    if (mb_bcs.d_view(m,BoundaryFace::outer_x1) == BoundaryFlag::user) {
-        // Compute the warped primitive variables at this location
-        ComputePrimitives(disc_params_,xwarp, ywarp, zwarp, den, pgas, ux, uy, uz);
+//     if (mb_bcs.d_view(m,BoundaryFace::outer_x1) == BoundaryFlag::user) {
+//         // Compute the warped primitive variables at this location
+//         ComputePrimitives(disc_params_,xwarp, ywarp, zwarp, den, pgas, ux, uy, uz);
 
-        // Now set the conserved variables using the primitive variables
-        w0_(m,IDN,k,j,(ie+i+1)) = den;
-        w0_(m,IVX,k,j,(ie+i+1)) = ux;
-        w0_(m,IVY,k,j,(ie+i+1)) = uy;
-        w0_(m,IVZ,k,j,(ie+i+1)) = uz;
-        if (disc_params_.eos_flag != disc_params_.eos_isothermal) {
-            w0_(m,IEN,k,j,(ie+i+1)) = pgas/(disc_params_.gamma_gas - 1.0);
-        }
-    }
-  });
-  // Now synchronise PrimToCons on X1 physical boundary ghost zones
-  pm->pmb_pack->phydro->peos->PrimToCons(w0_,u0_,is-ng,is-1,0,(n2-1),0,(n3-1));
-  pm->pmb_pack->phydro->peos->PrimToCons(w0_,u0_,ie+1,ie+ng,0,(n2-1),0,(n3-1));
+//         // Now set the conserved variables using the primitive variables
+//         w0_(m,IDN,k,j,(ie+i+1)) = den;
+//         w0_(m,IVX,k,j,(ie+i+1)) = ux;
+//         w0_(m,IVY,k,j,(ie+i+1)) = uy;
+//         w0_(m,IVZ,k,j,(ie+i+1)) = uz;
+//         if (disc_params_.eos_flag != disc_params_.eos_isothermal) {
+//             w0_(m,IEN,k,j,(ie+i+1)) = pgas/(disc_params_.gamma_gas - 1.0);
+//         }
+//     }
+//   });
+//   // Now synchronise PrimToCons on X1 physical boundary ghost zones
+//   pm->pmb_pack->phydro->peos->PrimToCons(w0_,u0_,is-ng,is-1,0,(n2-1),0,(n3-1));
+//   pm->pmb_pack->phydro->peos->PrimToCons(w0_,u0_,ie+1,ie+ng,0,(n2-1),0,(n3-1));
 
 
-  // X2 BOUNDARY CONDITIONS ---------------> 
+//   // X2 BOUNDARY CONDITIONS ---------------> 
 
-  pm->pmb_pack->phydro->peos->ConsToPrim(u0_,w0_,false,0,(n1-1),js-ng,js-1,0,(n3-1));
-  pm->pmb_pack->phydro->peos->ConsToPrim(u0_,w0_,false,0,(n1-1),je+1,je+ng,0,(n3-1));
-  par_for("fixed_x2", DevExeSpace(),0,(nmb-1),0,(n3-1),0,(ng-1),0,(n1-1),
-  KOKKOS_LAMBDA(int m, int k, int j, int i) {
-    // inner x2 boundary
-    Real &x1min = size.d_view(m).x1min;
-    Real &x1max = size.d_view(m).x1max;
-    Real xwarp = CellCenterX(i-is, indcs.nx1, x1min, x1max);
+//   pm->pmb_pack->phydro->peos->ConsToPrim(u0_,w0_,false,0,(n1-1),js-ng,js-1,0,(n3-1));
+//   pm->pmb_pack->phydro->peos->ConsToPrim(u0_,w0_,false,0,(n1-1),je+1,je+ng,0,(n3-1));
+//   par_for("fixed_x2", DevExeSpace(),0,(nmb-1),0,(n3-1),0,(ng-1),0,(n1-1),
+//   KOKKOS_LAMBDA(int m, int k, int j, int i) {
+//     // inner x2 boundary
+//     Real &x1min = size.d_view(m).x1min;
+//     Real &x1max = size.d_view(m).x1max;
+//     Real xwarp = CellCenterX(i-is, indcs.nx1, x1min, x1max);
 
-    Real &x2min = size.d_view(m).x2min;
-    Real &x2max = size.d_view(m).x2max;
-    Real ywarp = CellCenterX(j-js, indcs.nx2, x2min, x2max);
+//     Real &x2min = size.d_view(m).x2min;
+//     Real &x2max = size.d_view(m).x2max;
+//     Real ywarp = CellCenterX(j-js, indcs.nx2, x2min, x2max);
 
-    Real &x3min = size.d_view(m).x3min;
-    Real &x3max = size.d_view(m).x3max;
-    Real zwarp = CellCenterX(k-ks, indcs.nx3, x3min, x3max);
+//     Real &x3min = size.d_view(m).x3min;
+//     Real &x3max = size.d_view(m).x3max;
+//     Real zwarp = CellCenterX(k-ks, indcs.nx3, x3min, x3max);
 
-    Real den, pgas, ux, uy, uz;
-    // Inner x2 boundary
-    if (mb_bcs.d_view(m,BoundaryFace::inner_x2) == BoundaryFlag::user) {
-        // Compute the warped primitive variables at this location
-        ComputePrimitives(disc_params_,xwarp, ywarp, zwarp, den, pgas, ux, uy, uz);
+//     Real den, pgas, ux, uy, uz;
+//     // Inner x2 boundary
+//     if (mb_bcs.d_view(m,BoundaryFace::inner_x2) == BoundaryFlag::user) {
+//         // Compute the warped primitive variables at this location
+//         ComputePrimitives(disc_params_,xwarp, ywarp, zwarp, den, pgas, ux, uy, uz);
 
-        // Now set the conserved variables using the primitive variables
-        w0_(m,IDN,k,j,i) = den;
-        w0_(m,IVX,k,j,i) = ux;
-        w0_(m,IVY,k,j,i) = uy;
-        w0_(m,IVZ,k,j,i) = uz;
-        if (disc_params_.eos_flag != disc_params_.eos_isothermal) {
-            w0_(m,IEN,k,j,i) = pgas/(disc_params_.gamma_gas - 1.0);
-        }
-    }
+//         // Now set the conserved variables using the primitive variables
+//         w0_(m,IDN,k,j,i) = den;
+//         w0_(m,IVX,k,j,i) = ux;
+//         w0_(m,IVY,k,j,i) = uy;
+//         w0_(m,IVZ,k,j,i) = uz;
+//         if (disc_params_.eos_flag != disc_params_.eos_isothermal) {
+//             w0_(m,IEN,k,j,i) = pgas/(disc_params_.gamma_gas - 1.0);
+//         }
+//     }
 
-    // Outer x2 boundary
-    xwarp = CellCenterX((je+j+1)-js, indcs.nx2, x2min, x2max);
+//     // Outer x2 boundary
+//     xwarp = CellCenterX((je+j+1)-js, indcs.nx2, x2min, x2max);
 
-    if (mb_bcs.d_view(m,BoundaryFace::outer_x2) == BoundaryFlag::user) {
-        // Compute the warped primitive variables at this location
-        ComputePrimitives(disc_params_,xwarp, ywarp, zwarp, den, pgas, ux, uy, uz);
+//     if (mb_bcs.d_view(m,BoundaryFace::outer_x2) == BoundaryFlag::user) {
+//         // Compute the warped primitive variables at this location
+//         ComputePrimitives(disc_params_,xwarp, ywarp, zwarp, den, pgas, ux, uy, uz);
 
-        // Now set the conserved variables using the primitive variables
-        w0_(m,IDN,k,(je+j+1),i) = den;
-        w0_(m,IVX,k,(je+j+1),i) = ux;
-        w0_(m,IVY,k,(je+j+1),i) = uy;
-        w0_(m,IVZ,k,(je+j+1),i) = uz;
-        if (disc_params_.eos_flag != disc_params_.eos_isothermal) {
-            w0_(m,IEN,k,(je+j+1),i) = pgas/(disc_params_.gamma_gas - 1.0);
-        }
-    }
-  });
-  pm->pmb_pack->phydro->peos->PrimToCons(w0_,u0_,0,(n1-1),js-ng,js-1,0,(n3-1));
-  pm->pmb_pack->phydro->peos->PrimToCons(w0_,u0_,0,(n1-1),je+1,je+ng,0,(n3-1));
+//         // Now set the conserved variables using the primitive variables
+//         w0_(m,IDN,k,(je+j+1),i) = den;
+//         w0_(m,IVX,k,(je+j+1),i) = ux;
+//         w0_(m,IVY,k,(je+j+1),i) = uy;
+//         w0_(m,IVZ,k,(je+j+1),i) = uz;
+//         if (disc_params_.eos_flag != disc_params_.eos_isothermal) {
+//             w0_(m,IEN,k,(je+j+1),i) = pgas/(disc_params_.gamma_gas - 1.0);
+//         }
+//     }
+//   });
+//   pm->pmb_pack->phydro->peos->PrimToCons(w0_,u0_,0,(n1-1),js-ng,js-1,0,(n3-1));
+//   pm->pmb_pack->phydro->peos->PrimToCons(w0_,u0_,0,(n1-1),je+1,je+ng,0,(n3-1));
 
-  // X3 BOUNDARY CONDITIONS ---------------> 
+//   // X3 BOUNDARY CONDITIONS ---------------> 
 
-  pm->pmb_pack->phydro->peos->ConsToPrim(u0_,w0_,false,0,(n1-1),0,(n2-1),ks-ng,ks-1);
-  pm->pmb_pack->phydro->peos->ConsToPrim(u0_,w0_,false,0,(n1-1),0,(n2-1),ke+1,ke+ng);
-  par_for("fixed_ix3", DevExeSpace(),0,(nmb-1),0,(ng-1),0,(n2-1),0,(n1-1),
-  KOKKOS_LAMBDA(int m, int k, int j, int i) {
-    // inner x3 boundary
-    Real &x1min = size.d_view(m).x1min;
-    Real &x1max = size.d_view(m).x1max;
-    Real xwarp = CellCenterX(i-is, indcs.nx1, x1min, x1max);
+//   pm->pmb_pack->phydro->peos->ConsToPrim(u0_,w0_,false,0,(n1-1),0,(n2-1),ks-ng,ks-1);
+//   pm->pmb_pack->phydro->peos->ConsToPrim(u0_,w0_,false,0,(n1-1),0,(n2-1),ke+1,ke+ng);
+//   par_for("fixed_ix3", DevExeSpace(),0,(nmb-1),0,(ng-1),0,(n2-1),0,(n1-1),
+//   KOKKOS_LAMBDA(int m, int k, int j, int i) {
+//     // inner x3 boundary
+//     Real &x1min = size.d_view(m).x1min;
+//     Real &x1max = size.d_view(m).x1max;
+//     Real xwarp = CellCenterX(i-is, indcs.nx1, x1min, x1max);
 
-    Real &x2min = size.d_view(m).x2min;
-    Real &x2max = size.d_view(m).x2max;
-    Real ywarp = CellCenterX(j-js, indcs.nx2, x2min, x2max);
+//     Real &x2min = size.d_view(m).x2min;
+//     Real &x2max = size.d_view(m).x2max;
+//     Real ywarp = CellCenterX(j-js, indcs.nx2, x2min, x2max);
 
-    Real &x3min = size.d_view(m).x3min;
-    Real &x3max = size.d_view(m).x3max;
-    Real zwarp = CellCenterX(k-ks, indcs.nx3, x3min, x3max);
+//     Real &x3min = size.d_view(m).x3min;
+//     Real &x3max = size.d_view(m).x3max;
+//     Real zwarp = CellCenterX(k-ks, indcs.nx3, x3min, x3max);
 
-    // Initialise primitive variables
-    Real den, pgas, ux, uy, uz;
+//     // Initialise primitive variables
+//     Real den, pgas, ux, uy, uz;
 
-    // Inner x3 boundary
-    if (mb_bcs.d_view(m,BoundaryFace::inner_x3) == BoundaryFlag::user) {
-        // Compute the warped primitive variables at this location
-        ComputePrimitives(disc_params_,xwarp, ywarp, zwarp, den, pgas, ux, uy, uz);
+//     // Inner x3 boundary
+//     if (mb_bcs.d_view(m,BoundaryFace::inner_x3) == BoundaryFlag::user) {
+//         // Compute the warped primitive variables at this location
+//         ComputePrimitives(disc_params_,xwarp, ywarp, zwarp, den, pgas, ux, uy, uz);
 
-        // Now set the conserved variables using the primitive variables
-        w0_(m,IDN,k,j,i) = den;
-        w0_(m,IVX,k,j,i) = ux;
-        w0_(m,IVY,k,j,i) = uy;
-        w0_(m,IVZ,k,j,i) = uz;
-        if (disc_params_.eos_flag != disc_params_.eos_isothermal) {
-            w0_(m,IEN,k,j,i) = pgas/(disc_params_.gamma_gas - 1.0);
-        }
-    }
+//         // Now set the conserved variables using the primitive variables
+//         w0_(m,IDN,k,j,i) = den;
+//         w0_(m,IVX,k,j,i) = ux;
+//         w0_(m,IVY,k,j,i) = uy;
+//         w0_(m,IVZ,k,j,i) = uz;
+//         if (disc_params_.eos_flag != disc_params_.eos_isothermal) {
+//             w0_(m,IEN,k,j,i) = pgas/(disc_params_.gamma_gas - 1.0);
+//         }
+//     }
 
-    // Outer x3 boundary
-    xwarp = CellCenterX((ke+k+1)-ks, indcs.nx3, x3min, x3max);
+//     // Outer x3 boundary
+//     xwarp = CellCenterX((ke+k+1)-ks, indcs.nx3, x3min, x3max);
 
-    if (mb_bcs.d_view(m,BoundaryFace::outer_x3) == BoundaryFlag::user) {
-        // Compute the warped primitive variables at this location
-        ComputePrimitives(disc_params_,xwarp, ywarp, zwarp, den, pgas, ux, uy, uz);
+//     if (mb_bcs.d_view(m,BoundaryFace::outer_x3) == BoundaryFlag::user) {
+//         // Compute the warped primitive variables at this location
+//         ComputePrimitives(disc_params_,xwarp, ywarp, zwarp, den, pgas, ux, uy, uz);
 
-        // Now set the conserved variables using the primitive variables
-        w0_(m,IDN,(ke+k+1),j,i) = den;
-        w0_(m,IVX,(ke+k+1),j,i) = ux;
-        w0_(m,IVY,(ke+k+1),j,i) = uy;
-        w0_(m,IVZ,(ke+k+1),j,i) = uz;
-        if (disc_params_.eos_flag != disc_params_.eos_isothermal) {
-            w0_(m,IEN,(ke+k+1),j,i) = pgas/(disc_params_.gamma_gas - 1.0);
-        }
-    }
-  });
-  pm->pmb_pack->phydro->peos->PrimToCons(w0_,u0_,0,(n1-1),0,(n2-1),ks-ng,ks-1);
-  pm->pmb_pack->phydro->peos->PrimToCons(w0_,u0_,0,(n1-1),0,(n2-1),ke+1,ke+ng);
+//         // Now set the conserved variables using the primitive variables
+//         w0_(m,IDN,(ke+k+1),j,i) = den;
+//         w0_(m,IVX,(ke+k+1),j,i) = ux;
+//         w0_(m,IVY,(ke+k+1),j,i) = uy;
+//         w0_(m,IVZ,(ke+k+1),j,i) = uz;
+//         if (disc_params_.eos_flag != disc_params_.eos_isothermal) {
+//             w0_(m,IEN,(ke+k+1),j,i) = pgas/(disc_params_.gamma_gas - 1.0);
+//         }
+//     }
+//   });
+//   pm->pmb_pack->phydro->peos->PrimToCons(w0_,u0_,0,(n1-1),0,(n2-1),ks-ng,ks-1);
+//   pm->pmb_pack->phydro->peos->PrimToCons(w0_,u0_,0,(n1-1),0,(n2-1),ke+1,ke+ng);
 
   return;
 }
-
-    //----------------------------------------------------------------------------------------
-
-    // CALLUM: FIGURE OUT ALPHA VISCOSITY INCORPORATION AT A LATER DATE
-
-    // //! Introduce an alpha disc prescription
-    // KOKKOS_INLINE_FUNCTION  
-    // void AlphaViscosity(HydroDiffusion *phdif, MeshBlock *pmb, const AthenaArray<Real> &prim,
-    //                     const AthenaArray<Real> &bcc, int is, int ie, int js, int je,
-    //                     int ks, int ke) {
-    // // Need to set this to some value greater than 0.0 in the pgen file
-    // // Treat this as the constant alpha parameter 
-
-    // Real x(0.0), y(0.0), z(0.0), visc(0.0);
-
-    // if (phdif->nu_iso > 0.0) {
-    //     for (int k = pmb->ks; k <= pmb->ke; ++k) {
-    //     z = pmb->pcoord->x3v(k);
-    //     for (int j = pmb->js; j <= pmb->je; ++j) {
-    //     y = pmb->pcoord->x2v(j);
-    //     for (int i = pmb->is; i <= pmb->ie; ++i) {
-    //         x = pmb->pcoord->x1v(i);
-            
-    //         // Create a local variable to store the angular velocity at the disc midplane
-    //         Real Omega (0.0);
-
-    //         // Extract the spherical coordinates
-    //         Real sph_rad (0.0), sph_theta (0.0), sph_phi(0.0); // Initialise a spherical coordinates
-    //         CartToSphCoord(sph_rad,sph_theta,sph_phi,x,y,z);
-            
-    //         // Set the target sound speed
-    //         Real csq_target(0.0);
-    //         if (NON_BAROTROPIC_EOS){
-    //             csq_target = CSoundSqSph(sph_rad,sph_theta,sph_phi);
-    //         } else {
-    //             csq_target = c0sq; 
-    //         }
-    //         // Set the target orbital velocity
-    //         Omega = VelProfileCyl(sph_rad,0.0,0.0)/sph_rad;
-    //         visc = alpha*csq_target/Omega;
-    
-    //         phdif->nu(HydroDiffusion::DiffProcess::iso,k,j,i) = visc;
-    //         }
-    //     }
-    //     }
-    // }
-    // return;
-    // }   
