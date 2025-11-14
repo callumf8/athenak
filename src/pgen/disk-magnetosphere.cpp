@@ -67,6 +67,7 @@ namespace {
     Real rrigid, origid, rmagsph, denstar, ratmagfloor, ratmagfslope;
     Real mm, b0, beta;
     bool is_ideal;
+    bool magnetic_fields_enabled;
     static int bc_ix3, bc_ox3;
     };
 
@@ -74,12 +75,13 @@ namespace {
 
 } // End of namespace
 
-
 KOKKOS_INLINE_FUNCTION
 Real rho_floor(struct my_params mp, const Real r);
 
+KOKKOS_INLINE_FUNCTION
+Real GravPot_coe(struct my_params mp, Real rc);
+
 // prototypes for user-defined BCs and source functions
-void FixedDiscBC(Mesh *pm);
 void MySourceTerms(Mesh* pm, const Real bdt);
 
 //----------------------------------------------------------------------------------------
@@ -91,10 +93,10 @@ void MySourceTerms(Mesh* pm, const Real bdt);
 
 void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
 
-    // // Now enroll user source terms and boundary conditions if specified
-    // if (user_srcs) {
-    //     user_srcs_func = MySourceTerms;
-    //     }
+    // Now enroll user source terms and boundary conditions if specified
+    if (user_srcs) {
+        user_srcs_func = MySourceTerms;
+        }
 
     // if (user_bcs) {
     //     user_bcs_func = FixedDiscBC;
@@ -111,8 +113,11 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
     mp.beta = pin->GetReal("problem","beta");
     mp.denstar = pin->GetOrAddReal("problem","denstar",0.0);
     mp.dslope = pin->GetOrAddReal("problem","dslope",0.0);
+    mp.gamma_gas = pin->GetReal("hydro","gamma");
     mp.gm0 = 1.0;
     mp.is_ideal = eos.is_ideal;
+    if (pmbp->pmhd != nullptr) mp.magnetic_fields_enabled = true;
+    else mp.magnetic_fields_enabled = false;
     mp.origid = pin->GetOrAddReal("problem","origid",0.0);
     mp.p0_over_r0 = pin->GetOrAddReal("problem","p0_over_r0",0.0025);
     mp.qslope = pin->GetOrAddReal("problem","qslope",0.0);
@@ -126,52 +131,10 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
     mp.rmagsph = pin->GetOrAddReal("problem","rmagsph",0.0);
     mp.rs = pin->GetOrAddReal("problem", "rstar",0.0);
     mp.smoothtr = pin->GetOrAddReal("problem","smoothtr",0.0);
+    mp.tcool = pin->GetOrAddReal("problem","tcool",0.0);
 
     // If magnetic fields are enabled TODO: implement check
     mp.mm = pin->GetOrAddReal("problem","mm",0.0);  // Read in the magnetic moment
-
-    // // Get parameters for gravitatonal potential of softened central point mass
-    // disc_params.gm0 = pin->GetOrAddReal("problem","GM_soft",0.0);
-    // disc_params.r0 = pin->GetOrAddReal("problem","r0",1.0);
-    // disc_params.softening_len = pin->GetOrAddReal("problem","softening_len",disc_params.r0/100.0);
-    // disc_params.rminmask = pin->GetOrAddReal("problem","rminmask",0.0);
-    // disc_params.rmaxmask = pin->GetOrAddReal("problem","rmaxmask",0.0);
-    // disc_params.thetaminmask = pin->GetOrAddReal("problem","thetaminmask",0.0);
-    // disc_params.thetamaxmask = pin->GetOrAddReal("problem","thetamaxmask",0.0);
-
-    // // Get parameters for initial density
-    // disc_params.rho0 = pin->GetReal("problem","rho0");
-    // disc_params.d_slope = pin->GetOrAddReal("problem","d_slope",0.0);
-
-    // // Get parameters of initial pressure and cooling parameters
-
-    // // First extract the EOS - currently the can choose from 'isothermal' (globally) or 'ideal' (adiabatic)
-    // disc_params.eos_flag = disc_params.eos_isothermal;
-    // if (pin->GetString("hydro","eos").compare("isothermal") != 0) {
-    //     disc_params.eos_flag=disc_params.eos_ideal;
-    //     disc_params.c0sq = pin->GetOrAddReal("problem","c0sq",0.0025);
-    //     disc_params.s_slope = pin->GetOrAddReal("problem","s_slope",0.0);
-    //     disc_params.gamma_gas = pin->GetReal("hydro","gamma");
-    //     disc_params.relax_cs = pin->GetOrAddInteger("problem","relax_cs",0);
-    //     disc_params.beta = pin->GetReal("problem","beta");
-    // } else {
-    //     disc_params.c0sq=SQR(pin->GetReal("hydro","iso_sound_speed"));
-    // }
-
-    // // Get parameters for velocity damping
-    // disc_params.damp_switch = pin->GetOrAddInteger("problem","damp_switch",0);
-    // disc_params.tau = pin->GetOrAddReal("problem","tau",0.1);
-
-    // // Get parameters for alpha viscosity
-    // disc_params.alpha =  pin->GetOrAddReal("problem","nu_iso",0.0);
-
-    // // Get parameters for the warp profile
-    // disc_params.r_warp_mid =  pin->GetOrAddReal("problem","r_warp_mid",0.0);
-    // disc_params.warp_beta0 =  pin->GetOrAddReal("problem","warp_beta0",0.0);
-
-    // // Set density floor
-    // Real float_min = std::numeric_limits<float>::min();
-    // disc_params.dfloor=pin->GetOrAddReal("hydro","dfloor",(1024*(float_min)));
 
     // // Capture variables for kernel - e.g. indices for looping over the meshblocks and the size of the meshblocks.
     // auto &indcs = pmy_mesh_->mb_indcs;
@@ -264,7 +227,7 @@ namespace {
 
     //----------------------------------------------------------------------------------------
     KOKKOS_INLINE_FUNCTION
-    static Real DenProfileCyl(struct my_params mp, const Real rad, const Real phi, const Real z, int k, int j, int i) {
+    static Real DenProfileCyl(struct my_params mp, const Real rad, const Real phi, const Real z) {
         
         // Compute the density profile in cylindrical coordinates
         // Vertical hydrostatic equilibrium (Nelson et al. 2013) 
@@ -341,381 +304,22 @@ namespace {
 
 } // End of namespace functions
 
-    KOKKOS_INLINE_FUNCTION
-    Real rho_floor(struct my_params mp, Real rc) {
-        Real rhofloor = 0.0;
-        if (rc > mp.rs) rhofloor = mp.rho_floor0*pow(rc/mp.r0, mp.rho_floor_slope);
-        if (mp.mm != 0. && rc > mp.rs) rhofloor += 4.*mp.rho0*mp.mm*mp.mm/mp.beta/mp.ratmagfloor*
-                                                pow((mp.r0/rc),mp.ratmagfslope);
-        return fmax(rhofloor,mp.dfloor);
-    }
+KOKKOS_INLINE_FUNCTION
+Real rho_floor(struct my_params mp, Real rc) {
+    Real rhofloor = 0.0;
+    if (rc > mp.rs) rhofloor = mp.rho_floor0*pow(rc/mp.r0, mp.rho_floor_slope);
+    if (mp.mm != 0. && rc > mp.rs) rhofloor += 4.*mp.rho0*mp.mm*mp.mm/mp.beta/mp.ratmagfloor*
+                                            pow((mp.r0/rc),mp.ratmagfslope);
+    return fmax(rhofloor,mp.dfloor);
+}
+
+KOKKOS_INLINE_FUNCTION
+Real GravPot_coe(struct my_params mp, Real rc) {
+  return(-mp.gm0/rc/rc/rc);
+}
+
+void StarSourceTerms(Mesh* pm, const Real bdt);
         
-    // //----------------------------------------------------------------------------------------
-    // //! Transform from cartesian to spherical from cylindrical coordinates
-    // KOKKOS_INLINE_FUNCTION
-    // static void CylToSphCoord(struct warp_pgen pgen, Real &r, Real &theta, Real &phi, const Real rad_cyl, const Real phi_cyl, const Real z_cyl) {
-    
-    // r = std::sqrt(rad_cyl*rad_cyl+z_cyl*z_cyl);
-    // theta = std::atan2(rad_cyl,z_cyl);
-    // phi = phi_cyl;
-    
-    // return;
-    // }
-
-    // //----------------------------------------------------------------------------------------
-    // //! Transform from cylindrical to cartesian coordinates
-    // KOKKOS_INLINE_FUNCTION
-    // static void CylToCartCoord(struct warp_pgen pgen, Real &xcart, Real &ycart, Real &zcart, const Real rad, const Real phi, const Real z) {
-    
-    // xcart = rad*std::cos(phi);
-    // ycart = rad*std::sin(phi);
-    // zcart = z;
-
-    // return;
-    // }
-
-    // //----------------------------------------------------------------------------------------
-    // //! Transform from spherical to cartesian coordinates
-    // KOKKOS_INLINE_FUNCTION
-    // static void SphToCartCoord(struct warp_pgen pgen, Real &xcart, Real &ycart, Real &zcart, const Real r, const Real theta, const Real phi) {
-
-    // xcart=r*std::sin(theta)*std::cos(phi);
-    // ycart=r*std::sin(theta)*std::sin(phi);
-    // zcart=r*std::cos(theta);
-
-    // return;
-    // }
-
-    // //----------------------------------------------------------------------------------------
-    // //! Transform from cartesian to spherical coordinates
-    // KOKKOS_INLINE_FUNCTION
-    // static void CartToSphCoord(struct warp_pgen pgen, Real &r, Real &theta, Real &phi, const Real xcart, const Real ycart, const Real zcart) {
-
-    // r=std::sqrt(xcart*xcart+ycart*ycart+zcart*zcart);
-    // theta=std::atan2(std::sqrt(xcart*xcart+ycart*ycart),zcart);
-    // phi=std::atan2(ycart,xcart);
-
-    // return;
-    // }
-
-    // //----------------------------------------------------------------------------------------
-    // //! Transform the local vector defined in terms of spherical basis to the same vector in terms of cartesian basis. 
-    // KOKKOS_INLINE_FUNCTION
-    // static void SphToCartVec(struct warp_pgen pgen, Real &vec_x,Real &vec_y,Real &vec_z, const Real vec_r, const Real vec_theta, const Real vec_phi, const Real theta, const Real phi) {
-
-    // Real ctheta = std::cos(theta);
-    // Real stheta = std::sin(theta);
-    // Real cphi = std::cos(phi);
-    // Real sphi = std::sin(phi);
-
-    // vec_x = stheta*cphi*vec_r+ctheta*cphi*vec_theta-sphi*vec_phi;
-    // vec_y = stheta*sphi*vec_r+ctheta*sphi*vec_theta+cphi*vec_phi;
-    // vec_z   = ctheta*vec_r-stheta*vec_theta;
-
-    // return;
-    // }
-
-    // //----------------------------------------------------------------------------------------
-    // //! Transform the local vector defined in terms of cartesian basis to the same vector in terms of spherical basis. 
-    // KOKKOS_INLINE_FUNCTION
-    // static void CartToSphVec(struct warp_pgen pgen, Real &vec_r,Real &vec_theta,Real &vec_phi, const Real vec_x, const Real vec_y, const Real vec_z, const Real theta, const Real phi) {
-
-    // Real ctheta = std::cos(theta);
-    // Real stheta = std::sin(theta);
-    // Real cphi = std::cos(phi);
-    // Real sphi = std::sin(phi);
-
-    // vec_r     = stheta*cphi*vec_x+stheta*sphi*vec_y+ctheta*vec_z;
-    // vec_theta = ctheta*cphi*vec_x+ctheta*sphi*vec_y-stheta*vec_z;
-    // vec_phi   = -sphi*vec_x+cphi*vec_y;
-
-    // return;
-    // }
-
-    // //----------------------------------------------------------------------------------------
-    // //! Transform the local vector defined in terms of cylindrical basis to the same vector in terms of cartesian basis. 
-    // KOKKOS_INLINE_FUNCTION
-    // static void CylToCartVec(struct warp_pgen pgen, Real &vec_x,Real &vec_y,Real &vec_z, const Real vec_cr, const Real vec_cphi, const Real vec_cz, const Real phi) {
-
-    // Real cphi = std::cos(phi);
-    // Real sphi = std::sin(phi);
-
-    // vec_x = cphi*vec_cr-sphi*vec_cphi;
-    // vec_y = sphi*vec_cr+cphi*vec_cphi;
-    // vec_z = vec_cz;
-
-    // return;
-    // }
-
-    // //----------------------------------------------------------------------------------------
-    // //! Transform the local vector defined in terms of cartesian basis to the same vector in terms of cylindrical basis. 
-    // KOKKOS_INLINE_FUNCTION
-    // static void CartToCylVec(struct warp_pgen pgen, Real &vec_cr,Real &vec_cphi,Real &vec_cz, const Real vec_x, const Real vec_y, const Real vec_z, const Real phi) {
-
-    // Real cphi = std::cos(phi);
-    // Real sphi = std::sin(phi);
-
-    // vec_cr = cphi*vec_x+sphi*vec_y;
-    // vec_cphi = -sphi*vec_x+cphi*vec_y;
-    // vec_cz = vec_z;
-
-    // return;
-    // }
-
-    // //----------------------------------------------------------------------------------------
-    // //! Warp profiles for beta (tilt) and gamma (twist)
-    // KOKKOS_INLINE_FUNCTION
-    // static void GetWarpBeta(struct warp_pgen pgen, const Real rad, Real &warp_beta){
-
-    //     warp_beta = pgen.warp_beta0*std::exp(-SQR(std::abs(rad-pgen.r_warp_mid)));
-    //     return;
-    // }
-
-    // KOKKOS_INLINE_FUNCTION
-    // static void GetWarpGamma(struct warp_pgen pgen, const Real rad, Real &warp_gamma){
-    //     warp_gamma = 0.0;
-    //     return;
-    // }
-
-    // //----------------------------------------------------------------------------------------
-    // //! Tilt rotation on cartesian coordinate
-    // KOKKOS_INLINE_FUNCTION
-    // static void InverseWarpRot(struct warp_pgen pgen, const Real warp_beta, const Real warp_gamma, Real &xflat, Real &yflat, Real &zflat, const Real xwarp, const Real ywarp, const Real zwarp){
-
-    //     // Initialise the relevant trig angles.
-    //     Real cb = std::cos(warp_beta);
-    //     Real sb = std::sin(warp_beta);
-    //     Real cg = std::cos(warp_gamma);
-    //     Real sg = std::sin(warp_gamma);
-
-    //     // This function performs the inverse warping rotation and returns the unwarped cartesian coordinates
-    //     xflat = cb*cg*xwarp+cb*sg*ywarp-sb*zwarp;
-    //     yflat = -sg*xwarp+cg*ywarp;
-    //     zflat = sb*cg*xwarp+sb*sg*ywarp+cb*zwarp;
-
-    //     return;
-    // }
-
-    // //----------------------------------------------------------------------------------------
-    // //! Tilt rotation on cartesian cooridnates
-    // KOKKOS_INLINE_FUNCTION  
-    // static void WarpRot(struct warp_pgen pgen, const Real warp_beta, const Real warp_gamma, Real &xwarp, Real &ywarp, Real &zwarp, const Real xflat, const Real yflat, const Real zflat){
-
-    //     // Initialise the relevant trig angles.
-    //     Real cb = std::cos(warp_beta);
-    //     Real sb = std::sin(warp_beta);
-    //     Real cg = std::cos(warp_gamma);
-    //     Real sg = std::sin(warp_gamma);
-
-    //     // This function performs the inverse warping rotation and returns the unwarped cartesian coordinates
-    //     xwarp = cg*cb*xflat+cg*sb*zflat-sg*yflat;
-    //     ywarp = sg*cb*xflat+sg*sb*zflat+cg*yflat;
-    //     zwarp = -sb*xflat+cb*zflat;
-
-    //     return;
-    // }
-
-    // //----------------------------------------------------------------------------------------
-    // //! Get unwarped cylindrical coordinates given input warped cartesian grid.
-    // // This function takes us from the actual grid point and then subtracts off the desired, initial warp profile.
-    // KOKKOS_INLINE_FUNCTION  
-    // static void GetUnwarpedCylCoord(struct warp_pgen pgen, Real &rad,Real &phi,Real &z,const Real xwarp,const Real ywarp,const Real zwarp){
-
-    //     // Exract the spherical radius from the cartesian coordinates
-    //     Real rwarp = std::sqrt(SQR(xwarp)+SQR(ywarp)+SQR(zwarp));
-
-    //     // Get the warping angles at this position from the chosen warp profile
-    //     Real warp_beta(0.0), warp_gamma(0.0);
-    //     GetWarpBeta(pgen,rwarp,warp_beta);
-    //     GetWarpGamma(pgen,rwarp,warp_gamma);
-
-    //     // Now rotate these to the unwarped reference frame and modify the flat cartesian coordinates.
-    //     Real xflat(0.0), yflat(0.0), zflat(0.0);
-    //     InverseWarpRot(pgen,warp_beta, warp_gamma, xflat, yflat, zflat, xwarp, ywarp, zwarp);
-
-    //     // Finally convert these to the desired unwarped cylindrical coordinates
-    //     CartToCylCoord(pgen,rad,phi,z,xflat,yflat,zflat);
-
-    //     return;
-    // }
-
-    // //----------------------------------------------------------------------------------------
-    // //! Computes density in cylindrical coordinates
-    // KOKKOS_INLINE_FUNCTION  
-    // static Real DenProfileCyl(struct warp_pgen pgen, const Real rad, const Real phi, const Real z) {
-    //     Real den;
-    //     Real csq = pgen.c0sq;
-    //     enum Masking {nomask,innermask,outermask} inner=innermask;
-
-    //     if (pgen.eos_flag != pgen.eos_isothermal) csq = CSoundSqCyl(pgen,rad, phi, z);
-
-    //     if (MaskingCylCoords(pgen,rad,phi,z)==inner){
-    //         den = 1.0;
-    //     } else {
-    //         Real denmid = pgen.rho0*pow(rad/pgen.r0,-pgen.d_slope);
-    //         Real dentem = denmid*std::exp(pgen.gm0/csq*(1./std::sqrt(SQR(rad)+SQR(z))-1./rad));
-    //         den = dentem;
-    //     }
-    //     return fmax(den,pgen.dfloor);
-    // }
-
-    // //----------------------------------------------------------------------------------------
-    // //! Target cylindrical sound speed squared = pressure/density
-    // // Constant on cylinders of constant R
-    // KOKKOS_INLINE_FUNCTION  
-    // static Real CSoundSqCyl(struct warp_pgen pgen, const Real rad, const Real phi, const Real z) {
-    // Real csq;
-    // enum Masking {nomask,innermask,outermask};
-
-    // if (MaskingCylCoords(pgen,rad,phi,z)==innermask){
-    //     csq = 0.1;
-    // } else {
-    //     csq = pgen.c0sq*pow(rad/pgen.r0, -pgen.s_slope);
-    // }
-    // return csq;
-    // }
-
-    // //----------------------------------------------------------------------------------------
-    // //! Target spherical sound speed squared 
-    // // Constant on shells of constant r
-    // KOKKOS_INLINE_FUNCTION  
-    // static Real CSoundSqSph(struct warp_pgen pgen, const Real rad, const Real theta, const Real phi) {
-    // Real csq;
-    // enum Masking {nomask,innermask,outermask};
-
-    // if (MaskingSphCoords(pgen,rad,theta,phi)==innermask){
-    //     csq = 0.1;
-    // } else {
-    //     csq = pgen.c0sq*pow(rad/pgen.r0, -pgen.s_slope);
-    // }
-    // return csq;
-    // }
-
-    // //----------------------------------------------------------------------------------------
-    // //! Computes rotational velocity in cylindrical coordinates
-    // KOKKOS_INLINE_FUNCTION  
-    // static Real VelProfileCyl(struct warp_pgen pgen, const Real rad, const Real phi, const Real z) {
-    //     enum Masking {nomask,innermask,outermask};
-
-    //     if (MaskingCylCoords(pgen,rad,phi,z)==innermask){
-    //         Real vel = 0.01;
-    //         return vel;
-            
-    //     } else {
-    //         Real csq = CSoundSqCyl(pgen, rad, phi, z);
-    //         Real vel = (-pgen.d_slope-pgen.s_slope)*csq/(pgen.gm0/rad)+(1.0-pgen.s_slope)+pgen.s_slope*rad/std::sqrt(rad*rad+z*z);
-            
-    //         if (vel < 0.0){
-    //             pgen.error=1;
-    //         }
-    //         vel = std::sqrt(pgen.gm0/rad)*std::sqrt(vel);
-    //         return vel;
-    //     }
-    // }
-
-    // //----------------------------------------------------------------------------------------
-    // // Masked location where we reset the background values in different coordinates
-    // // Include an outer boundary region which interfaces with the physical domain and 
-    // // can be used to effectively set boundary conditions. Also include an inner region which
-    // // can simply be set to whatever to avoid singularities or limitations on the CFL.
-
-    // KOKKOS_INLINE_FUNCTION  
-    // static int MaskingCartCoords(struct warp_pgen pgen,const Real x, const Real y, const Real z){
-    //     Real r(0.0), theta(0.0), phi(0.0);
-    //     enum Masking {nomask,innermask,outermask} region;
-
-    //     // Convert to spherical coordinates     
-    //     CartToSphCoord(pgen,r, theta, phi, x, y, z);
-
-    //     if ((r < pgen.rminmask) || (r > pgen.rmaxmask) || (theta < pgen.thetaminmask) || (theta > pgen.thetamaxmask)) {
-    //         region=outermask;
-    //         if ((r < 0.5*pgen.rminmask) || (r > 1.5*pgen.rmaxmask) || (theta < pgen.thetaminmask-0.3) || (theta > pgen.thetamaxmask+0.3))
-    //             region=innermask;
-    //     } else {
-    //         region=nomask;
-    //     }
-    //     return region;
-    // }
-
-    // KOKKOS_INLINE_FUNCTION
-    // static int MaskingCylCoords(struct warp_pgen pgen,const Real rad, const Real phi, const Real z){
-    // Real r(0.0), theta(0.0), phi_sph(0.0);
-    // enum Masking {nomask,innermask,outermask} region;
-
-    // // Convert to spherical coordinates     
-    // CylToSphCoord(pgen, r, theta, phi_sph, rad, phi, z);
-
-    // if ((r < pgen.rminmask) || (r > pgen.rmaxmask) || (theta < pgen.thetaminmask) || (theta > pgen.thetamaxmask)) {
-    //     region=outermask;
-    //     if ((r < 0.5*pgen.rminmask) || (r > 1.5*pgen.rmaxmask) || (theta < pgen.thetaminmask-0.3) || (theta > pgen.thetamaxmask+0.3))
-    //         region=innermask;
-    // } else {
-    //     region=nomask;
-    // }
-    // return region;
-    // }
-    
-    // KOKKOS_INLINE_FUNCTION
-    // static int MaskingSphCoords(struct warp_pgen pgen,const Real r, const Real theta, const Real phi){  
-    // enum Masking {nomask,innermask,outermask} region;
-    // if ((r < pgen.rminmask) || (r > pgen.rmaxmask) || (theta < pgen.thetaminmask) || (theta > pgen.thetamaxmask)) {
-    //     region=outermask;
-    //     if ((r < 0.5*pgen.rminmask) || (r > 1.5*pgen.rmaxmask) || (theta < pgen.thetaminmask-0.3) || (theta > pgen.thetamaxmask+0.3))
-    //         region=innermask;
-    // } else {
-    //     region=nomask;
-    // }
-    // return region;
-    // }
-
-    // //----------------------------------------------------------------------------------------
-    // // Function to calculate the initial condition primitive variables at any specified cartesian 
-    // // location in the disc.
-
-    // KOKKOS_INLINE_FUNCTION
-    // static void ComputePrimitives(struct warp_pgen pgen,
-    //                                    Real xwarp, Real ywarp, Real zwarp,
-    //                                    Real& rho, Real& pgas,
-    //                                    Real& ux, Real& uy, Real& uz) {
-
-    //     // Extract the spherical radius
-    //     Real rwarp = std::sqrt(SQR(xwarp)+SQR(ywarp)+SQR(zwarp));
-        
-    //     // Start by converting the system to the unwarped cylindrical coordinates
-    //     Real rad(0.0), phi(0.0), z(0.0);
-    //     GetUnwarpedCylCoord(pgen,rad,phi,z,xwarp,ywarp,zwarp);
-    //     // Now initialise the density scalar as read from the unwarped equilibrium profile
-    //     Real den = DenProfileCyl(pgen,rad,phi,z);
-    //     // Read in the purely cylindrical azimuthal velocity at this location
-    //     Real vel = VelProfileCyl(pgen,rad,phi,z);
-
-    //     // Now convert this into the cartesian velocity components at this location
-    //     Real velx_flat(0.0), vely_flat(0.0), velz_flat(0.0);
-    //     CylToCartVec(pgen,velx_flat,vely_flat,velz_flat, 0.0, vel, 0.0, phi);
-
-    //     // Now rotate the velocity components according to the warping rotation
-    //     Real velx_warp(0.0), vely_warp(0.0), velz_warp(0.0);
-    //     Real warp_beta(0.0), warp_gamma(0.0);
-    //     // Extract the warp angles
-    //     GetWarpBeta(pgen,rwarp,warp_beta);
-    //     GetWarpGamma(pgen,rwarp,warp_gamma);
-    //     // Rotate the cartesian vector according to the warp
-    //     WarpRot(pgen,warp_beta, warp_gamma, velx_warp, vely_warp, velz_warp, velx_flat, vely_flat, velz_flat);
-
-    //     // Now set the primitive variables
-    //     rho = den;
-    //     ux = velx_warp;
-    //     uy = vely_warp;
-    //     uz = velz_warp;
-    //     if (pgen.eos_flag != pgen.eos_isothermal) {
-    //         pgas = CSoundSqCyl(pgen,rad,phi,z)*den;
-    //         }  
-        
-    //     return;      
-    // }
-
-// } // End of namespace
-
 //----------------------------------------------------------------------------------------
 //! Below we will define the custom user defined source terms and boundary conditions.
 //----------------------------------------------------------------------------------------
@@ -724,6 +328,11 @@ namespace {
 //! and a velocity damping function.
 
 void MySourceTerms(Mesh* pm, const Real bdt) {
+
+    StarSourceTerms(pm, bdt);
+
+    // if(mp.is_ideal && mp.tcool>0.0) Cooling(pmb,time,dt,prim,bcc,cons);
+    return;
 
     // // Capture variables for kernel - e.g. indices for looping over the meshblocks and the size of the meshblocks.
     // auto &indcs = pm->mb_indcs;
@@ -846,6 +455,113 @@ void MySourceTerms(Mesh* pm, const Real bdt) {
 
     return;
 }
+
+//----------------------------------------------------------------------------------------
+//! \fn void StarSourceTerms()
+//! \brief user source function which implements the artificial radial forcing which
+//  mimics the warped pressure gradients in a distorted disc.
+
+void StarSourceTerms(Mesh* pm, const Real bdt) {
+
+    // Capture variables for kernel - e.g. indices for looping over the meshblocks and the size of the meshblocks.
+    auto &indcs = pm->mb_indcs;
+    int &is = indcs.is; int &ie = indcs.ie;
+    int &js = indcs.js; int &je = indcs.je;
+    int &ks = indcs.ks; int &ke = indcs.ke;
+    MeshBlockPack *pmbp = pm->pmb_pack;
+    auto &size = pmbp->pmb->mb_size;
+
+    // Now set a local parameter struct for lambda capturing
+    auto mp_ = mp;
+
+    // Select either Hydro or MHD
+    DvceArray5D<Real> u0_, w0_, bcc0_;
+    if (pm->pmb_pack->phydro != nullptr) {
+        u0_ = pm->pmb_pack->phydro->u0;
+        w0_ = pm->pmb_pack->phydro->w0;
+    } else if (pm->pmb_pack->pmhd != nullptr) {
+        u0_ = pm->pmb_pack->pmhd->u0;
+        w0_ = pm->pmb_pack->pmhd->w0;
+        bcc0_ = pmbp->pmhd->bcc0;
+
+    }
+
+    int nvar = u0_.extent_int(1);
+    DvceArray1D<Real> src;
+    Kokkos::realloc(src, nvar);
+
+    par_for("pgen_starsource",DevExeSpace(),0,(pmbp->nmb_thispack-1),ks,ke,js,je,is,ie,
+    KOKKOS_LAMBDA(int m,int k,int j,int i) {
+
+        // Extract the cell center coordinates
+        Real &x1min = size.d_view(m).x1min;
+        Real &x1max = size.d_view(m).x1max;
+        Real x1v = CellCenterX(i-is, indcs.nx1, x1min, x1max);
+
+        Real &x2min = size.d_view(m).x2min;
+        Real &x2max = size.d_view(m).x2max;
+        Real x2v = CellCenterX(j-js, indcs.nx2, x2min, x2max);
+
+        Real &x3min = size.d_view(m).x3min;
+        Real &x3max = size.d_view(m).x3max;
+        Real x3v = CellCenterX(k-ks, indcs.nx3, x3min, x3max);
+
+        Real rc = sqrt(x1v*x1v+x2v*x2v+x3v*x3v);
+        Real fcoe=GravPot_coe(mp_,rc); // TODO: Need to define and implement this function.
+        
+        Real f_x1 = fcoe*x1v;
+        Real f_x2 = fcoe*x2v;
+        Real f_x3 = fcoe*x3v;
+
+        // Implement the smoothing function
+        Real rcv2 = (rc-mp_.rs)*(rc-mp_.rs);
+        Real fsmooth = rcv2/(rcv2+mp_.smoothtr*mp_.smoothtr);
+        if (rc<mp_.rs) fsmooth=0.;
+
+        // Now set the source terms
+        src(IM1) = bdt*w0_(m,IDN,k,j,i)*f_x1*fsmooth;
+        src(IM2) = bdt*w0_(m,IDN,k,j,i)*f_x2*fsmooth;
+        src(IM3) = bdt*w0_(m,IDN,k,j,i)*f_x3*fsmooth;
+
+        u0_(m,IM1,k,j,i) += src(IM1);
+        u0_(m,IM2,k,j,i) += src(IM2);
+        u0_(m,IM3,k,j,i) += src(IM3);
+        
+        if(mp_.is_ideal) {
+            u0_(m,IEN,k,j,i) += src(IM1)*w0_(m,IM1,k,j,i) + 
+                                src(IM2)*w0_(m,IM2,k,j,i) + 
+                                src(IM3)*w0_(m,IM3,k,j,i);
+        }
+
+        Real rad(0.0),phi(0.0),z(0.0);
+        Real v1(0.0),v2(0.0),v3(0.0);
+
+        GetCylCoord(mp_,rad,phi,z,x1v,x2v,x3v);
+        Real rsph=sqrt(x1v*x1v+x2v*x2v+x3v*x3v);
+        if (rsph<mp_.rfix) {
+            u0_(m,IDN,k,j,i) = DenProfileCyl(mp_,rad,phi,z);
+            VelProfileCyl(mp_,rad,phi,z,v1,v2,v3);
+            u0_(m,IM1,k,j,i) = v1*u0_(m,IDN,k,j,i);
+            u0_(m,IM2,k,j,i) = v2*u0_(m,IDN,k,j,i);
+            u0_(m,IM3,k,j,i) = v3*u0_(m,IDN,k,j,i);
+            
+            if (mp_.is_ideal) {
+
+                u0_(m,IEN,k,j,i) = PoverR(mp_,rad, phi, z)*u0_(m,IDN,k,j,i)/(mp_.gamma_gas - 1.0)+
+                                0.5*(SQR(v1)+SQR(v2)+SQR(v3))*u0_(m,IDN,k,j,i);
+            
+                if (mp_.magnetic_fields_enabled) {
+                    u0_(m,IEN,k,j,i) = u0_(m,IEN,k,j,i)+0.5*(SQR(bcc0_(m,IBX,k,j,i))+
+                                    SQR(bcc0_(m,IBY,k,j,i))+SQR(bcc0_(m,IBZ,k,j,i)));
+                }
+            }
+        }
+    
+        u0_(m,IDN,k,j,i) = fmax(u0_(m,IDN,k,j,i),rho_floor(mp_,rc));
+        
+    }); // end par_for
+
+} // end star source terms 
 
 //----------------------------------------------------------------------------------------
 //! \fn FixedDiscBC
