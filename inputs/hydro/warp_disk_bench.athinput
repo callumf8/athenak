@@ -25,38 +25,38 @@ integrator = rk2
 <mesh>
 nghost = 4
 
-nx1    = 96               # root dx = 9.6/96 = 0.1
-x1min  = -4.8
-x1max  =  4.8
+nx1    = 128              # root dx = 12.8/128 = 0.1
+x1min  = -6.4
+x1max  =  6.4
 ix1_bc = user
 ox1_bc = user
 
-nx2    = 96
-x2min  = -4.8
-x2max  =  4.8
+nx2    = 128
+x2min  = -6.4
+x2max  =  6.4
 ix2_bc = user
 ox2_bc = user
 
-nx3    = 48
-x3min  = -2.4
-x3max  =  2.4
+nx3    = 64
+x3min  = -3.2
+x3max  =  3.2
 ix3_bc = user
 ox3_bc = user
 
 <meshblock>
-nx1 = 16
-nx2 = 16
-nx3 = 16
+nx1 = 32                  # 32^3 blocks: match production deck (good GPU occupancy vs 16^3)
+nx2 = 32
+nx3 = 32
 
 <mesh_refinement>
 refinement = static
 <refined_region1>
-x1min = -4.8
-x1max =  4.8
-x2min = -4.8
-x2max =  4.8
-x3min = -2.4
-x3max =  2.4
+x1min = -6.4
+x1max =  6.4
+x2min = -6.4
+x2max =  6.4
+x3min = -3.2
+x3max =  3.2
 level = 1                 # dx = 0.05
 <refined_region2>
 x1min = -3.2
@@ -67,13 +67,13 @@ x3min = -1.6
 x3max =  1.6
 level = 2                 # dx = 0.025
 <refined_region3>
-x1min = -2.0
-x1max =  2.0
-x2min = -2.0
-x2max =  2.0
-x3min = -1.0
-x3max =  1.0
-level = 3                 # dx = 0.0125 (covers inner disc r~1-2: sets the CFL dt)
+x1min = -1.6
+x1max =  1.6
+x2min = -1.6
+x2max =  1.6
+x3min = -0.8
+x3max =  0.8
+level = 3                 # dx = 0.0125 (covers inner disc r~1-1.6: sets the CFL dt)
 
 # Robust globally-isothermal config used for the single-GPU throughput benchmark.
 # The Deng problem is strongly supersonic (orbital Mach ~ 20), so the CFL timestep is set by
@@ -99,7 +99,7 @@ r0            = 1.0
 softening_len = 0.02
 
 rminmask     = 1.0
-rmaxmask     = 4.5         # smaller active disc for the benchmark box
+rmaxmask     = 6.0         # active disc extent for the benchmark box
 thetaminmask = 1.107
 thetamaxmask = 2.034
 
