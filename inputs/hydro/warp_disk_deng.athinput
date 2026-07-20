@@ -1,0 +1,133 @@
+# AthenaK input — Deng, Ogilvie & Mayer (2021) warped-disc parametric instability
+# Scale-free code units: GM = 1, r0 = 1  (r0 == inner edge == 5 au; 1 code length = 5 au).
+#   inner edge 5 au -> r=1 ;  warp band 10-30 au -> r=2-6 ;  outer edge 50 au -> r=10.
+#   H/R = 0.05 constant  ->  c_s(R) = 0.05 R^{-1/2},  c_s^2(r0) = 0.0025  (s_slope = 1).
+#   Sigma ~ R^{-1} ( Sigma H = const )  ->  rho_mid ~ R^{-2}  (d_slope = 2).
+#   Untwisted sin-ramp tilt 0 -> 0.2 across r=2..6 (Deng eq. for l_x); peak psi ~ 0.2 rad.
+# Bending-wave crossing time tau = (4/3)/(eps Omega) = 26.7 R^{3/2}; to r=10 => ~843.
+# This is the PRODUCTION target grid (H/8 in the warp band, ~1.3e8 cells; needs a large-mem
+# GPU or a few GPUs). Use warp_disk_bench.athinput for single-GPU throughput benchmarking.
+
+<comment>
+problem = Deng2021 warped disc, parametric instability
+
+<job>
+basename = warp_deng
+
+<output1>
+file_type = bin
+variable  = hydro_w
+dt        = 20.0
+
+<output2>
+file_type = hst
+dt        = 2.0
+
+<time>
+evolution  = dynamic
+cfl_number = 0.3
+nlim       = -1
+tlim       = 843.0        # ~ one bending-wave crossing time (to r=10)
+integrator = rk2
+
+<mesh>
+nghost = 4                # wenoz + fofc require >= 4 ghost zones
+
+nx1    = 224              # root: dx = 22.4/224 = 0.1
+x1min  = -11.2
+x1max  =  11.2
+ix1_bc = user
+ox1_bc = user
+
+nx2    = 224
+x2min  = -11.2
+x2max  =  11.2
+ix2_bc = user
+ox2_bc = user
+
+nx3    = 96               # z: dz = 9.6/96 = 0.1
+x3min  = -4.8
+x3max  =  4.8
+ix3_bc = user
+ox3_bc = user
+
+<meshblock>
+nx1 = 32
+nx2 = 32
+nx3 = 32
+
+<mesh_refinement>
+refinement = static
+# Origin-centred nested cubes, each halving dx and tall enough in z to contain the tilted
+# warped sheet z ~ R sin(beta) + few*H. Effective dx: L1=0.05, L2=0.025, L3=0.0125.
+# H/8 = R/160: L3 gives H/8 at r=2 (inner warp edge); outer disc reaches H/8 from L1.
+<refined_region1>
+x1min = -9.6
+x1max =  9.6
+x2min = -9.6
+x2max =  9.6
+x3min = -3.2
+x3max =  3.2
+level = 1
+<refined_region2>
+x1min = -6.4
+x1max =  6.4
+x2min = -6.4
+x2max =  6.4
+x3min = -2.4
+x3max =  2.4
+level = 2
+<refined_region3>
+x1min = -3.2
+x1max =  3.2
+x2min = -3.2
+x2max =  3.2
+x3min = -1.6
+x3max =  1.6
+level = 3
+
+<hydro>
+eos         = ideal       # ideal + fast beta-cooling reproduces the vertically-isothermal,
+gamma       = 1.4         #   H/R=const disc (globally-isothermal EOS cannot vary c_s with R)
+reconstruct = wenoz       # low-dissipation high-order reconstruction (numerical viscosity)
+rsolver     = hllc        # low-diffusion Riemann solver
+fofc        = true        # first-order flux correction for robustness at the inner edge
+dfloor      = 1.e-9
+pfloor      = 1.e-12
+
+<problem>
+pgen_name = warp_disc
+user_srcs = true
+user_hist = true          # enroll WarpHistory (tilt bins + vertical/meridional KE)
+
+# --- central potential ---
+GM_soft       = 1.0
+r0            = 1.0
+softening_len = 0.02
+
+# --- masks (spherical r + polar theta cone): active disc = 1 <= r <= 10, near midplane ---
+rminmask     = 1.0
+rmaxmask     = 10.0
+thetaminmask = 1.107       # ~ pi/2 - 0.46 rad (~26 deg above midplane): contains warp+scaleheights
+thetamaxmask = 2.034       # ~ pi/2 + 0.46 rad
+
+# --- density / temperature (Deng: H/R=0.05 const, Sigma~R^-1) ---
+rho0    = 1.0
+d_slope = 2.0              # rho_mid ~ R^{-d_slope}  ->  Sigma ~ R^{-1}
+c0sq    = 0.0025           # c_s^2(r0) = (0.05)^2
+s_slope = 1.0              # c_s^2 ~ R^{-s_slope}  ->  H/R = const
+
+# --- locally-isothermal relaxation (fast beta-cooling toward cylindrical c_s^2 target) ---
+relax_cs = 2               # 2 = relax to cylindrical-R sound-speed profile
+beta     = 1.0             # relaxation time ~ beta * R^{3/2} (fast => vertically isothermal)
+
+# --- vertical velocity damping (off; use for controlled relaxation tests only) ---
+damp_switch = 0
+tau         = 0.1
+nu_iso      = 0.0
+
+# --- warp profile (Deng untwisted sin-ramp) ---
+warp_beta0 = 0.2           # peak tilt (rad)
+r_warp_in  = 2.0           # 10 au: tilt begins
+r_warp_out = 6.0           # 30 au: tilt reaches peak / plateau
+r_warp_mid = 4.0           # 20 au (band midpoint)

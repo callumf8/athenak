@@ -1,0 +1,121 @@
+# AthenaK input — SINGLE-GPU throughput benchmark for the Deng warped disc.
+# Same physics, reconstruction, Riemann solver and finest cell size (dx_min = 0.0125) as
+# warp_disk_deng.athinput, on a reduced domain so it fits comfortably on one GPU. The finest
+# level covers the inner disc r~1-2 (the CFL-limiting region), so the measured mean dt and the
+# measured zone-cycles/s transfer directly to the full production grid for extrapolation.
+# Run e.g.:  athena -i warp_disk_bench.athinput time/nlim=100  (then read zone-cycles/s + dt).
+
+<comment>
+problem = Deng warped disc - single-GPU benchmark
+
+<job>
+basename = warp_bench
+
+<output1>
+file_type = hst
+dt        = 1.0
+
+<time>
+evolution  = dynamic
+cfl_number = 0.3
+nlim       = 100          # benchmark: terminate on cycle count (override on CLI as needed)
+tlim       = 1.e10
+integrator = rk2
+
+<mesh>
+nghost = 4
+
+nx1    = 96               # root dx = 9.6/96 = 0.1
+x1min  = -4.8
+x1max  =  4.8
+ix1_bc = user
+ox1_bc = user
+
+nx2    = 96
+x2min  = -4.8
+x2max  =  4.8
+ix2_bc = user
+ox2_bc = user
+
+nx3    = 48
+x3min  = -2.4
+x3max  =  2.4
+ix3_bc = user
+ox3_bc = user
+
+<meshblock>
+nx1 = 16
+nx2 = 16
+nx3 = 16
+
+<mesh_refinement>
+refinement = static
+<refined_region1>
+x1min = -4.8
+x1max =  4.8
+x2min = -4.8
+x2max =  4.8
+x3min = -2.4
+x3max =  2.4
+level = 1                 # dx = 0.05
+<refined_region2>
+x1min = -3.2
+x1max =  3.2
+x2min = -3.2
+x2max =  3.2
+x3min = -1.6
+x3max =  1.6
+level = 2                 # dx = 0.025
+<refined_region3>
+x1min = -2.0
+x1max =  2.0
+x2min = -2.0
+x2max =  2.0
+x3min = -1.0
+x3max =  1.0
+level = 3                 # dx = 0.0125 (covers inner disc r~1-2: sets the CFL dt)
+
+# Robust globally-isothermal config used for the single-GPU throughput benchmark.
+# The Deng problem is strongly supersonic (orbital Mach ~ 20), so the CFL timestep is set by
+# the orbital velocity (v_K ~ 1 >> c_s ~ 0.05); the measured dt and zone-cycles/s are therefore
+# essentially EOS-independent and transfer to the ideal+cooling production config
+# (warp_disk_deng.athinput). Isothermal EOS requires an hlle/llf Riemann solver.
+<hydro>
+eos             = isothermal
+iso_sound_speed = 0.05     # H/R = 0.05 at r0=1 (grows ~sqrt(R) for global isothermal)
+reconstruct     = wenoz
+rsolver         = hlle
+fofc            = true
+dfloor          = 1.e-9
+pfloor          = 1.e-12
+
+<problem>
+pgen_name = warp_disc
+user_srcs = true
+user_hist = true
+
+GM_soft       = 1.0
+r0            = 1.0
+softening_len = 0.02
+
+rminmask     = 1.0
+rmaxmask     = 4.5         # smaller active disc for the benchmark box
+thetaminmask = 1.107
+thetamaxmask = 2.034
+
+rho0    = 1.0
+d_slope = 2.0
+c0sq    = 0.0025
+s_slope = 1.0
+
+relax_cs = 2
+beta     = 1.0
+
+damp_switch = 0
+tau         = 0.1
+nu_iso      = 0.0
+
+warp_beta0 = 0.2
+r_warp_in  = 2.0
+r_warp_out = 6.0
+r_warp_mid = 4.0
