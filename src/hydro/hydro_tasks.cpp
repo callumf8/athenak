@@ -65,7 +65,10 @@ void Hydro::AssembleHydroTasks(std::map<std::string, std::shared_ptr<TaskList>> 
   id.recvu     = tl["stagen"]->AddTask(&Hydro::RecvU, this, id.sendu);
   id.sendu_shr = tl["stagen"]->AddTask(&Hydro::SendU_Shr, this, id.recvu);
   id.recvu_shr = tl["stagen"]->AddTask(&Hydro::RecvU_Shr, this, id.sendu_shr);
-  id.bcs       = tl["stagen"]->AddTask(&Hydro::ApplyPhysicalBCs, this, id.recvu_shr);
+  id.user_constraint = tl["stagen"]->AddTask(&Hydro::UserConstraint, this,
+                              id.recvu_shr);
+  id.bcs       = tl["stagen"]->AddTask(&Hydro::ApplyPhysicalBCs, this,
+                              id.user_constraint);
   id.prol      = tl["stagen"]->AddTask(&Hydro::Prolongate, this, id.bcs);
   id.c2p       = tl["stagen"]->AddTask(&Hydro::ConToPrim, this, id.prol);
   id.newdt     = tl["stagen"]->AddTask(&Hydro::NewTimeStep, this, id.c2p);
@@ -348,6 +351,21 @@ TaskStatus Hydro::RecvU_Shr(Driver *pdrive, int stage) {
     }
   }
   return tstat;
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn TaskStatus Hydro::UserConstraint
+//! \brief Wrapper task to apply a user-defined constraint (e.g. a locally-isothermal
+//! temperature reset) to the conserved variables. Runs after RecvU_Shr, before
+//! ApplyPhysicalBCs (mirrors MHD::UserConstraint).
+
+TaskStatus Hydro::UserConstraint(Driver *pdrive, int stage) {
+  if (pmy_pack->pmesh->pgen->user_constraint &&
+      pmy_pack->pmesh->pgen->user_constraint_func != nullptr) {
+    Real beta_dt = (pdrive->beta[stage - 1]) * (pmy_pack->pmesh->dt);
+    (pmy_pack->pmesh->pgen->user_constraint_func)(pmy_pack->pmesh, beta_dt);
+  }
+  return TaskStatus::complete;
 }
 
 //----------------------------------------------------------------------------------------

@@ -137,6 +137,7 @@ warp_pgen disc_params;
 // prototypes for user-defined BCs, source functions and history diagnostics
 void FixedDiscBC(Mesh *pm);
 void MySourceTerms(Mesh* pm, const Real bdt);
+void WarpConstraint(Mesh* pm, const Real bdt);
 void WarpHistory(HistoryData *pdata, Mesh *pm);
 
 //----------------------------------------------------------------------------------------
@@ -159,6 +160,10 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
 
     if (user_hist) {
         user_hist_func = WarpHistory;
+    }
+
+    if (user_constraint) {
+        user_constraint_func = WarpConstraint;
     }
 
     // If restarting then end initialisation here
@@ -263,13 +268,22 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
         // Now compute the warped primitive variables at this location
         ComputePrimitives(disc_params_,xwarp, ywarp, zwarp, den, pgas, ux, uy, uz);
 
+        // Apply the same low density floor as the WarpConstraint so the initial condition is
+        // consistent with the constrained locally-isothermal state (otherwise the cold, near-
+        // vacuum atmosphere gives a spuriously tiny t=0 CFL timestep that then slowly ramps up).
+        den = fmax(den, disc_params_.dfloor);
+
         // Now set the conserved variables using the primitive variables
         u0_(m,IDN,k,j,i) = den;
         u0_(m,IM1,k,j,i) = den*ux;
         u0_(m,IM2,k,j,i) = den*uy;
         u0_(m,IM3,k,j,i) = den*uz;
         if (disc_params_.eos_flag != disc_params_.eos_isothermal) {
-            u0_(m,IEN,k,j,i) = pgas/(disc_params_.gamma_gas - 1.0)+0.5*(SQR(ux)+SQR(uy)+ SQR(uz))/den;
+            // Locally-isothermal internal energy from the lab-cylindrical c_s^2(R) target,
+            // identical to WarpConstraint (keeps the recovered pressure / CFL sound speed bounded).
+            Real rad_lab = std::sqrt(SQR(xwarp)+SQR(ywarp));
+            Real csq = CSoundSqCyl(disc_params_, rad_lab, 0.0, zwarp);
+            u0_(m,IEN,k,j,i) = 0.5*(SQR(ux)+SQR(uy)+SQR(uz))*den + csq*den/(disc_params_.gamma_gas - 1.0);
         }
     });
 
@@ -1073,6 +1087,63 @@ void FixedDiscBC(Mesh *pm) {
     // }
     // return;
     // }
+
+//----------------------------------------------------------------------------------------
+//! \fn WarpConstraint
+//! \brief Constrained locally-isothermal temperature reset (enrolled when
+//! <problem>/user_constraint, ideal EOS only). Runs as a hydro task after the update, before
+//! the physical BCs / ConToPrim / NewTimeStep (mirrors the magsph-testing CoolingSourceTerms
+//! MHD constraint). For every cell (interior + ghost, so no extra U communication is needed):
+//!   1. apply a low density floor to the conserved density;
+//!   2. hard-set the internal energy so P/rho = c_s^2(R) exactly (vertically isothermal,
+//!      H/R=0.05 constant), i.e. no relaxation timescale.
+//! This keeps the recovered pressure -- and hence the CFL sound speed -- bounded in the cold,
+//! near-vacuum disc atmosphere, which the slow beta-cooling source term could not.
+
+void WarpConstraint(Mesh* pm, const Real bdt) {
+  auto disc_params_ = disc_params;
+  // Only meaningful for the ideal EOS (isothermal already has a fixed, global c_s).
+  if (disc_params_.eos_flag == disc_params_.eos_isothermal) return;
+
+  auto &indcs = pm->mb_indcs;
+  int &is = indcs.is; int &ie = indcs.ie;
+  int &js = indcs.js; int &je = indcs.je;
+  int &ks = indcs.ks; int &ke = indcs.ke;
+  int ng = indcs.ng;
+  MeshBlockPack *pmbp = pm->pmb_pack;
+  auto &size = pmbp->pmb->mb_size;
+
+  // Include ghost zones so ApplyPhysicalBCs need not re-exchange U after this (as in the
+  // magsph-testing CoolingSourceTerms constraint).
+  int il = is - ng;                          int iu = ie + ng;
+  int jl = (indcs.nx2 > 1) ? (js - ng) : js; int ju = (indcs.nx2 > 1) ? (je + ng) : je;
+  int kl = (indcs.nx3 > 1) ? (ks - ng) : ks; int ku = (indcs.nx3 > 1) ? (ke + ng) : ke;
+
+  DvceArray5D<Real> u0_;
+  if (pmbp->phydro != nullptr) u0_ = pmbp->phydro->u0;
+
+  par_for("warp_constraint", DevExeSpace(), 0, (pmbp->nmb_thispack-1), kl,ku, jl,ju, il,iu,
+  KOKKOS_LAMBDA(int m,int k,int j,int i) {
+    Real &x1min = size.d_view(m).x1min; Real &x1max = size.d_view(m).x1max;
+    Real x = CellCenterX(i-is, indcs.nx1, x1min, x1max);
+    Real &x2min = size.d_view(m).x2min; Real &x2max = size.d_view(m).x2max;
+    Real y = CellCenterX(j-js, indcs.nx2, x2min, x2max);
+    Real &x3min = size.d_view(m).x3min; Real &x3max = size.d_view(m).x3max;
+    Real z = CellCenterX(k-ks, indcs.nx3, x3min, x3max);
+
+    // (1) low density floor
+    Real dens = fmax(u0_(m,IDN,k,j,i), disc_params_.dfloor);
+    u0_(m,IDN,k,j,i) = dens;
+
+    // (2) locally-isothermal energy reset: E = KE + c_s^2(R) rho / (gamma-1)
+    Real e_k = 0.5*(SQR(u0_(m,IM1,k,j,i)) + SQR(u0_(m,IM2,k,j,i))
+                  + SQR(u0_(m,IM3,k,j,i)))/dens;
+    Real rad = std::sqrt(x*x + y*y);                 // lab cylindrical radius
+    Real csq = CSoundSqCyl(disc_params_, rad, 0.0, z);
+    u0_(m,IEN,k,j,i) = e_k + csq*dens/(disc_params_.gamma_gas - 1.0);
+  });
+  return;
+}
 
 //----------------------------------------------------------------------------------------
 //! \fn WarpHistory

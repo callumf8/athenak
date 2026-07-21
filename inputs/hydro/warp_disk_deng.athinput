@@ -58,6 +58,8 @@ nx3 = 32
 
 <mesh_refinement>
 refinement = static
+prolong_primitives = true   # prolongate primitives at level boundaries (ideal EOS: avoids
+                            # unphysical energy/pressure states in fine-ghost interpolation)
 # Origin-centred nested cubes, each halving dx and tall enough in z to contain the tilted
 # warped sheet z ~ R sin(beta) + few*H. Effective dx: L1=0.05, L2=0.025, L3=0.0125.
 # H/8 = R/160: L3 gives H/8 at r=2 (inner warp edge); outer disc reaches H/8 from L1.
@@ -87,18 +89,23 @@ x3max =  1.6
 level = 3
 
 <hydro>
-eos         = ideal       # ideal + fast beta-cooling reproduces the vertically-isothermal,
-gamma       = 1.4         #   H/R=const disc (globally-isothermal EOS cannot vary c_s with R)
+eos         = ideal       # ideal + the constrained locally-isothermal reset (user_constraint)
+gamma       = 1.4         #   reproduces the vertically-isothermal, H/R=const disc exactly
 reconstruct = wenoz       # low-dissipation high-order reconstruction (numerical viscosity)
 rsolver     = hllc        # low-diffusion Riemann solver
 fofc        = true        # first-order flux correction for robustness at the inner edge
-dfloor      = 1.e-9
+dfloor      = 2.e-3       # low density floor. NB: multi-level SMR with the cold (Mach~20) disc
+                          #   needs a floor this high for stability -- a lower floor lets the
+                          #   near-vacuum atmosphere velocity blow up at level-jump boundaries.
+                          #   Still << warp-band midplane density (rho_mid ~ 0.03..0.25 for r=2..6).
+                          #   A radial floor + sponge (magsph-style) is the production-grade fix.
 pfloor      = 1.e-12
 
 <problem>
 pgen_name = warp_disc
-user_srcs = true
-user_hist = true          # enroll WarpHistory (tilt bins + vertical/meridional KE)
+user_srcs       = true
+user_hist       = true    # enroll WarpHistory (tilt bins + vertical/meridional KE)
+user_constraint = true    # enroll WarpConstraint: constrained locally-isothermal T reset
 
 # --- central potential ---
 GM_soft       = 1.0
@@ -117,9 +124,10 @@ d_slope = 2.0              # rho_mid ~ R^{-d_slope}  ->  Sigma ~ R^{-1}
 c0sq    = 0.0025           # c_s^2(r0) = (0.05)^2
 s_slope = 1.0              # c_s^2 ~ R^{-s_slope}  ->  H/R = const
 
-# --- locally-isothermal relaxation (fast beta-cooling toward cylindrical c_s^2 target) ---
-relax_cs = 2               # 2 = relax to cylindrical-R sound-speed profile
-beta     = 1.0             # relaxation time ~ beta * R^{3/2} (fast => vertically isothermal)
+# --- temperature control: use the constrained locally-isothermal reset (user_constraint)
+#     above, not the slow beta-cooling source term (which could not tame the cold atmosphere) ---
+relax_cs = 0               # 0 = off (WarpConstraint enforces c_s^2(R) directly each stage)
+beta     = 1.0             # (unused when relax_cs=0)
 
 # --- vertical velocity damping (off; use for controlled relaxation tests only) ---
 damp_switch = 0

@@ -51,6 +51,7 @@ struct HydroTaskIDs {
   TaskID recvu;
   TaskID sendu_shr;
   TaskID recvu_shr;
+  TaskID user_constraint;
   TaskID bcs;
   TaskID prol;
   TaskID c2p;
@@ -125,6 +126,7 @@ class Hydro {
   TaskStatus RecvU(Driver *d, int stage);
   TaskStatus SendU_Shr(Driver *d, int stage);
   TaskStatus RecvU_Shr(Driver *d, int stage);
+  TaskStatus UserConstraint(Driver *d, int stage);
   TaskStatus ApplyPhysicalBCs(Driver* pdrive, int stage);
   TaskStatus Prolongate(Driver* pdrive, int stage);
   TaskStatus ConToPrim(Driver *d, int stage);
