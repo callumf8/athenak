@@ -65,13 +65,15 @@ void Hydro::AssembleHydroTasks(std::map<std::string, std::shared_ptr<TaskList>> 
   id.recvu     = tl["stagen"]->AddTask(&Hydro::RecvU, this, id.sendu);
   id.sendu_shr = tl["stagen"]->AddTask(&Hydro::SendU_Shr, this, id.recvu);
   id.recvu_shr = tl["stagen"]->AddTask(&Hydro::RecvU_Shr, this, id.sendu_shr);
-  id.user_constraint = tl["stagen"]->AddTask(&Hydro::UserConstraint, this,
-                              id.recvu_shr);
-  id.bcs       = tl["stagen"]->AddTask(&Hydro::ApplyPhysicalBCs, this,
-                              id.user_constraint);
+  id.bcs       = tl["stagen"]->AddTask(&Hydro::ApplyPhysicalBCs, this, id.recvu_shr);
   id.prol      = tl["stagen"]->AddTask(&Hydro::Prolongate, this, id.bcs);
   id.c2p       = tl["stagen"]->AddTask(&Hydro::ConToPrim, this, id.prol);
-  id.newdt     = tl["stagen"]->AddTask(&Hydro::NewTimeStep, this, id.c2p);
+  // User constraint runs AFTER ConToPrim so it can reset both u0 and w0 (primitives), ensuring
+  // the next stage's fluxes and the timestep see the constrained (locally-isothermal) state --
+  // including prolongated SMR ghost cells, whose energy-recovered pressure is otherwise garbage
+  // for a high-Mach flow.
+  id.user_constraint = tl["stagen"]->AddTask(&Hydro::UserConstraint, this, id.c2p);
+  id.newdt     = tl["stagen"]->AddTask(&Hydro::NewTimeStep, this, id.user_constraint);
 
   // assemble "after_stagen" task list
   id.csend = tl["after_stagen"]->AddTask(&Hydro::ClearSend, this, none);

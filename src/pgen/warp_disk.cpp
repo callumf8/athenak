@@ -1119,8 +1119,15 @@ void WarpConstraint(Mesh* pm, const Real bdt) {
   int jl = (indcs.nx2 > 1) ? (js - ng) : js; int ju = (indcs.nx2 > 1) ? (je + ng) : je;
   int kl = (indcs.nx3 > 1) ? (ks - ng) : ks; int ku = (indcs.nx3 > 1) ? (ke + ng) : ke;
 
-  DvceArray5D<Real> u0_;
-  if (pmbp->phydro != nullptr) u0_ = pmbp->phydro->u0;
+  // Runs AFTER ConToPrim (see hydro_tasks.cpp), so both u0 (conserved) and w0 (primitives)
+  // are reset here. Resetting w0 is essential: the next stage's fluxes read w0, and at SMR
+  // level boundaries the prolongated ghost cells otherwise carry a garbage pressure recovered
+  // from the (high-Mach) total energy -- E - KE is ~1/(gamma*Mach^2) of E, so interpolation
+  // error swamps it. Forcing P = c_s^2(R) rho everywhere makes the disc genuinely locally
+  // isothermal and removes that boundary artifact at its source.
+  DvceArray5D<Real> u0_, w0_;
+  if (pmbp->phydro != nullptr) { u0_ = pmbp->phydro->u0; w0_ = pmbp->phydro->w0; }
+  Real gm1 = disc_params_.gamma_gas - 1.0;
 
   par_for("warp_constraint", DevExeSpace(), 0, (pmbp->nmb_thispack-1), kl,ku, jl,ju, il,iu,
   KOKKOS_LAMBDA(int m,int k,int j,int i) {
@@ -1131,16 +1138,24 @@ void WarpConstraint(Mesh* pm, const Real bdt) {
     Real &x3min = size.d_view(m).x3min; Real &x3max = size.d_view(m).x3max;
     Real z = CellCenterX(k-ks, indcs.nx3, x3min, x3max);
 
-    // (1) low density floor
-    Real dens = fmax(u0_(m,IDN,k,j,i), disc_params_.dfloor);
-    u0_(m,IDN,k,j,i) = dens;
+    // low density floor (both conserved and primitive)
+    Real dens = fmax(w0_(m,IDN,k,j,i), disc_params_.dfloor);
 
-    // (2) locally-isothermal energy reset: E = KE + c_s^2(R) rho / (gamma-1)
-    Real e_k = 0.5*(SQR(u0_(m,IM1,k,j,i)) + SQR(u0_(m,IM2,k,j,i))
-                  + SQR(u0_(m,IM3,k,j,i)))/dens;
-    Real rad = std::sqrt(x*x + y*y);                 // lab cylindrical radius
-    Real csq = CSoundSqCyl(disc_params_, rad, 0.0, z);
-    u0_(m,IEN,k,j,i) = e_k + csq*dens/(disc_params_.gamma_gas - 1.0);
+    // locally-isothermal pressure: P = c_s^2(R) * rho
+    Real csq = CSoundSqCyl(disc_params_, std::sqrt(x*x + y*y), 0.0, z);
+    Real pgas = csq*dens;
+
+    // rewrite primitives
+    w0_(m,IDN,k,j,i) = dens;
+    w0_(m,IEN,k,j,i) = pgas/gm1;   // internal energy (primitive "pressure" slot for ideal EOS)
+
+    // rewrite conserved consistently (velocity from primitives; density floored)
+    Real ux = w0_(m,IVX,k,j,i), uy = w0_(m,IVY,k,j,i), uz = w0_(m,IVZ,k,j,i);
+    u0_(m,IDN,k,j,i) = dens;
+    u0_(m,IM1,k,j,i) = dens*ux;
+    u0_(m,IM2,k,j,i) = dens*uy;
+    u0_(m,IM3,k,j,i) = dens*uz;
+    u0_(m,IEN,k,j,i) = pgas/gm1 + 0.5*dens*(ux*ux + uy*uy + uz*uz);
   });
   return;
 }

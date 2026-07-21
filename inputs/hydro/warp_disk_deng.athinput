@@ -94,11 +94,7 @@ gamma       = 1.4         #   reproduces the vertically-isothermal, H/R=const di
 reconstruct = wenoz       # low-dissipation high-order reconstruction (numerical viscosity)
 rsolver     = hllc        # low-diffusion Riemann solver
 fofc        = true        # first-order flux correction for robustness at the inner edge
-dfloor      = 2.e-3       # low density floor. NB: multi-level SMR with the cold (Mach~20) disc
-                          #   needs a floor this high for stability -- a lower floor lets the
-                          #   near-vacuum atmosphere velocity blow up at level-jump boundaries.
-                          #   Still << warp-band midplane density (rho_mid ~ 0.03..0.25 for r=2..6).
-                          #   A radial floor + sponge (magsph-style) is the production-grade fix.
+dfloor      = 1.e-6       # low density floor (<< warp-band midplane rho ~ 0.03..0.25)
 pfloor      = 1.e-12
 
 <problem>
