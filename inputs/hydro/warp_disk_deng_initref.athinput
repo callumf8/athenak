@@ -1,0 +1,126 @@
+# AthenaK input — Deng target disc, H/8, via ITERATIVE INITIAL REFINEMENT (no static seed).
+#
+# Same Deng physics/geometry as warp_disk_deng_balls.athinput, but instead of seeding a large
+# static <refined_ball> super-set (36,856 blocks / 1.21e9 cells at t=0), the t=0 AMR mesh is
+# built by iterating WarpRefine on the analytic ICs from the plain 64^3 root
+# (<mesh_refinement>/initial_refinement=true). Peak block count tracks the *converged*
+# disc-following mesh (target ~1.24e8 cells), ~10x smaller than the balls IC.
+#
+# Deng, Ogilvie & Mayer (2021): disc r=1..10 (5..50 au), warp band r=2..6, H/R=0.05 CONST
+# (ideal EOS, s_slope=1), target 8 cells/H. Inner edge r=1 => max level 6 (dx=0.00547 <= r/160).
+#
+# NB: converged production grid is ~tens of GB -> build/run on GPU (typhon), not a laptop.
+# For a laptop-tractable STRUCTURE preview, override on the command line, e.g.:
+#   athena -i warp_disk_deng_initref.athinput \
+#     mesh_refinement/num_levels=4 problem/ref_cells_per_h=1 \
+#     meshblock/nx1=16 meshblock/nx2=16 meshblock/nx3=16 time/nlim=0
+
+<comment>
+problem = Deng warped disc - H/8 via iterative initial refinement (no static seed)
+
+<job>
+basename = warp_deng_initref
+
+<output1>
+file_type = bin
+variable  = hydro_w
+dcycle    = 10
+
+<output2>
+file_type = hst
+dt        = 2.0
+
+<time>
+evolution  = dynamic
+cfl_number = 0.3
+nlim       = 20
+tlim       = 1.0e10
+integrator = rk2
+
+<mesh>
+nghost = 4
+
+nx1    = 64               # radial dx = 22.4/64 = 0.35
+x1min  = -11.2
+x1max  =  11.2
+ix1_bc = user
+ox1_bc = user
+
+nx2    = 64
+x2min  = -11.2
+x2max  =  11.2
+ix2_bc = user
+ox2_bc = user
+
+nx3    = 64               # z: dz = 9.6/64 = 0.15 (Deng vertical extent)
+x3min  = -4.8
+x3max  =  4.8
+ix3_bc = user
+ox3_bc = user
+
+<meshblock>
+nx1 = 32                  # 32^3 MeshBlocks (efficiency floor): 64/32 = 2 => 2x2x2 = 8 root blocks
+nx2 = 32
+nx3 = 32
+
+<mesh_refinement>
+refinement          = adaptive
+num_levels          = 7        # root + 6 refined levels (max level set by inner edge r=1, H/8)
+refinement_interval = 2
+ncycle_check        = 1
+max_nmb_per_rank    = 1000000
+prolong_primitives  = true
+initial_refinement  = true     # <-- build the t=0 mesh by iterating WarpRefine on the ICs
+
+<amr_criterion0>
+method = user
+
+<hydro>
+eos          = ideal
+gamma        = 1.4
+reconstruct  = wenoz
+rsolver      = hllc
+fofc         = true
+dfloor       = 1.e-6
+pfloor       = 1.e-12
+
+<problem>
+pgen_name       = warp_disc
+user_srcs       = true
+user_hist       = true
+user_constraint = true         # constrained locally-isothermal reset (Deng H/R=const)
+
+GM_soft       = 1.0
+r0            = 1.0
+softening_len = 0.12
+
+rminmask     = 1.0
+rmaxmask     = 10.0
+thetaminmask = 1.107
+thetamaxmask = 2.034
+
+rho0    = 1.0
+d_slope = 2.0
+c0sq    = 0.0025               # c_s^2(r0) = 0.05^2
+s_slope = 1.0                  # H/R = 0.05 const  =>  WarpRefine H = 0.05 r
+
+relax_cs = 0
+beta     = 1.0
+
+r_cav        = 0.8
+cav_n        = 6.0
+r_out_taper  = 9.5
+w_out_taper  = 1.0
+
+inner_damp   = 1
+r_damp       = 1.0
+w_damp       = 0.2
+damp_tau     = 0.08
+
+warp_beta0 = 0.2
+r_warp_in  = 2.0
+r_warp_out = 6.0
+r_warp_mid = 4.0
+
+ref_cells_per_h = 8.0          # Deng target: 8 cells per scaleheight (H/8)
+ref_dens_frac   = 0.05

@@ -54,7 +54,8 @@ MeshRefinement::MeshRefinement(Mesh *pm, ParameterInput *pin) :
   send_data("lb send data",1),
   recv_data("lb recv data",1),
 #endif
-  prolong_prims(false) {
+  prolong_prims(false),
+  init_refine(false) {
   if (pin->DoesBlockExist("mesh_refinement")) {
     // read interval (in cycles) between check of AMR and derefinement
     ncyc_check_amr = pin->GetOrAddReal("mesh_refinement", "ncycle_check", 1);
@@ -62,6 +63,11 @@ MeshRefinement::MeshRefinement(Mesh *pm, ParameterInput *pin) :
     // read prolongate primitives flag
     if (pin->DoesParameterExist("mesh_refinement", "prolong_primitives")) {
       prolong_prims = pin->GetBoolean("mesh_refinement", "prolong_primitives");
+    }
+    // read initial-refinement flag: build the t=0 AMR mesh by iterating the refinement
+    // criterion on the analytic ICs, instead of seeding a large static refined region.
+    if (pin->DoesParameterExist("mesh_refinement", "initial_refinement")) {
+      init_refine = pin->GetBoolean("mesh_refinement", "initial_refinement");
     }
   }
 
@@ -138,6 +144,73 @@ void MeshRefinement::AdaptiveMeshRefinement(Driver *pdriver, ParameterInput *pin
 
     nmb_created += nnew;
     nmb_deleted += ndel;
+  }
+  return;
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn void MeshRefinement::InitialRefinement()
+//! \brief Build the initial (t=0) AMR mesh by iterating the refinement criterion on the
+//! analytic initial conditions, BEFORE the time integration begins -- mirroring the Athena++
+//! initial-AMR behaviour. Starting from the root/static mesh, each pass (i) re-runs the
+//! problem generator so the current mesh holds exact analytic ICs, (ii) recovers primitives
+//! and ghost zones, (iii) evaluates the refinement criterion, and (iv) refines only the
+//! flagged blocks. The loop repeats until no block is flagged for refinement, so the peak
+//! block count never exceeds the converged AMR mesh (plus 2:1-balancing blocks) -- avoiding
+//! the large static super-set otherwise needed to sample fine-scale ICs analytically.
+//! De-refinement is suppressed during the build so the mesh grows monotonically and the loop
+//! terminates in at most (max_level - root_level) passes. Called from Driver::Initialize for
+//! new (non-restart) adaptive runs when <mesh_refinement>/initial_refinement=true.
+
+void MeshRefinement::InitialRefinement(Driver *pdrive, ParameterInput *pin) {
+  Mesh *pm = pmy_mesh;
+  if (!(pm->adaptive)) return;
+
+  // Neutralise the "recently refined" guard in CheckForRefinement: ncyc_since_ref is 0 at
+  // t=0, which would otherwise zero every refine flag. With refinement_interval=0 the guard
+  // (ncyc_since_ref < interval) is always false. Restored before returning.
+  int saved_interval = refinement_interval;
+  refinement_interval = 0;
+
+  int max_passes = pm->max_level - pm->root_level;
+  int pass = 0;
+  for (pass = 0; pass < max_passes; ++pass) {
+    // (i) analytic ICs on the current mesh (sets conserved u0 on all blocks, including any
+    //     created on the previous pass)
+    pm->pgen->UserProblem(pin, false);
+    // (ii) fill ghost zones and recover primitives (the criterion tests primitive w0)
+    pdrive->InitBoundaryValuesAndPrimitives(pm);
+    // (iii) evaluate criterion -> refine_flag (applies max/root-level guards + MPI gather)
+    CheckForRefinement(pm->pmb_pack);
+    // suppress de-refinement so the mesh is built monotonically from coarse -> fine
+    for (int m=0; m<(pm->nmb_total); ++m) {
+      if (refine_flag.h_view(m) < 0) { refine_flag.h_view(m) = 0; }
+    }
+    refine_flag.template modify<HostMemSpace>();
+    refine_flag.template sync<DevExeSpace>();
+    // (iv) update the tree; stop once nothing new is flagged (mesh has converged)
+    int nnew = 0, ndel = 0;
+    UpdateMeshBlockTree(nnew, ndel);
+    if (nnew == 0) { break; }
+    RedistAndRefineMeshBlocks(pin, nnew, ndel);
+    if (global_variable::my_rank == 0) {
+      std::cout << "InitialRefinement pass " << (pass+1) << ": +" << nnew
+                << " MeshBlocks -> " << pm->nmb_total << " total" << std::endl;
+    }
+  }
+
+  // Re-sample the analytic ICs on the final mesh so every block -- including those created on
+  // the last refining pass -- holds exact analytic data rather than prolongated values.
+  // Ghost zones / primitives are (re)set by the caller (Driver::Initialize).
+  pm->pgen->UserProblem(pin, false);
+
+  refinement_interval = saved_interval;
+  // reset "cycles since refined" so the first evolution AMR check is not skewed by the build
+  for (int m=0; m<(pm->nmb_total); ++m) { ncyc_since_ref(m) = 0; }
+
+  if (global_variable::my_rank == 0) {
+    std::cout << "InitialRefinement complete after " << pass << " refining pass(es): "
+              << pm->nmb_total << " MeshBlocks on the initial mesh" << std::endl;
   }
   return;
 }

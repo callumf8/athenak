@@ -310,6 +310,13 @@ void Driver::ExecuteTaskList(Mesh *pm, std::string tl, int stage) {
 //  outputting ICs, and computing initial time step
 
 void Driver::Initialize(Mesh *pmesh, ParameterInput *pin, Outputs *pout, bool res_flag) {
+  //---- Step 0.  For new adaptive runs with <mesh_refinement>/initial_refinement=true, build
+  //  the t=0 mesh by iterating the refinement criterion on the analytic ICs (Athena++-style),
+  //  so fine-scale ICs are sampled analytically without allocating a large static super-set.
+  if (!res_flag && pmesh->adaptive && pmesh->pmr != nullptr && pmesh->pmr->init_refine) {
+    pmesh->pmr->InitialRefinement(this, pin);
+  }
+
   //---- Step 1.  Set conserved variables in ghost zones for all physics
   InitBoundaryValuesAndPrimitives(pmesh);
 
