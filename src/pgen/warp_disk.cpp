@@ -52,6 +52,12 @@ KOKKOS_INLINE_FUNCTION
 static int MaskingSphCoords(struct warp_pgen pgen, const Real rad, const Real theta, const Real phi);
 
 KOKKOS_INLINE_FUNCTION
+static Real EdgeTaper(struct warp_pgen pgen, const Real rad);
+
+KOKKOS_INLINE_FUNCTION
+static Real EdgeTaperDlnDlnR(struct warp_pgen pgen, const Real rad);
+
+KOKKOS_INLINE_FUNCTION
 static Real DenProfileCyl(struct warp_pgen pgen, const Real rad, const Real phi, const Real z);
 
 KOKKOS_INLINE_FUNCTION
@@ -121,6 +127,20 @@ struct warp_pgen {
     Real r_warp_in, r_warp_out;   // Deng sin-ramp warp band [r_warp_in, r_warp_out]
     Real rtaper;                  // clamp radius: profiles use max(rad,rtaper) to keep
                                   // c_s, rho, v_phi finite near the axis (rad->0)
+    // Deng-style containment tapers (replace the old hard density mask): the surface density
+    // is smoothly rolled to the floor at the inner and outer edges so the disc is contained
+    // within the domain with no sharp interface.
+    Real r_cav, cav_n;            // inner cavity  T_in  = exp(-(r_cav/R)^cav_n)
+    Real r_out_taper, w_out_taper;// outer edge    T_out = 0.5[1 - tanh((R-r_out_taper)/w_out_taper)]
+    // Inner-region velocity damping: tempers the fast Keplerian motion near the centre so the
+    // CFL timestep stays bounded (used together with the softened potential).
+    int  inner_damp;              // 1 = enable
+    Real r_damp, w_damp, damp_tau;// ramp centre / width (tanh) + damping timescale
+    // Adaptive refinement criterion (WarpRefine): refine a block where BOTH
+    //   (1) rho_cell > ref_dfrac * rho_mid(r)      [disc body, ~few H of the midplane]
+    //   (2) Delta > H(r)/ref_N                     [fewer than ref_N cells per scaleheight]
+    // with r the spherical radius and H(r) the analytic thin-disc scaleheight.
+    Real ref_N, ref_dfrac;
     Real dfloor;
     enum eos_enum {ideal, isothermal} eos_flag;
     eos_enum eos_isothermal=isothermal;
@@ -139,6 +159,7 @@ void FixedDiscBC(Mesh *pm);
 void MySourceTerms(Mesh* pm, const Real bdt);
 void WarpConstraint(Mesh* pm, const Real bdt);
 void WarpHistory(HistoryData *pdata, Mesh *pm);
+void WarpRefine(MeshBlockPack *pmbp);
 
 //----------------------------------------------------------------------------------------
 //! \fn
@@ -164,6 +185,12 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
 
     if (user_constraint) {
         user_constraint_func = WarpConstraint;
+    }
+
+    // Enroll the adaptive refinement criterion (only used when refinement=adaptive with a
+    // <amr_criterion> block of method=user; harmless otherwise).
+    if (pmy_mesh_->adaptive) {
+        user_ref_func = WarpRefine;
     }
 
     // If restarting then end initialisation here
@@ -220,6 +247,22 @@ void ProblemGenerator::UserProblem(ParameterInput *pin, const bool restart) {
     // ideal EOS). Clamp R to rtaper inside the profile evaluations (as in the original
     // files/warped_disk.cpp prototype). Default: half the inner mask radius.
     disc_params.rtaper = pin->GetOrAddReal("problem","rtaper", 0.5*disc_params.rminmask);
+
+    // Containment tapers (Deng-style smooth inner/outer edges, replacing the hard density mask).
+    disc_params.r_cav       = pin->GetOrAddReal("problem","r_cav", 0.8);
+    disc_params.cav_n       = pin->GetOrAddReal("problem","cav_n", 6.0);
+    disc_params.r_out_taper = pin->GetOrAddReal("problem","r_out_taper", 9.5);
+    disc_params.w_out_taper = pin->GetOrAddReal("problem","w_out_taper", 1.0);
+
+    // Inner-region velocity damping (temper the fast Keplerian centre; bounds the CFL dt).
+    disc_params.inner_damp  = pin->GetOrAddInteger("problem","inner_damp", 0);
+    disc_params.r_damp      = pin->GetOrAddReal("problem","r_damp", 1.0);
+    disc_params.w_damp      = pin->GetOrAddReal("problem","w_damp", 0.2);
+    disc_params.damp_tau    = pin->GetOrAddReal("problem","damp_tau", 0.08);
+
+    // Adaptive refinement criterion parameters.
+    disc_params.ref_N     = pin->GetOrAddReal("problem","ref_cells_per_h", 16.0);
+    disc_params.ref_dfrac = pin->GetOrAddReal("problem","ref_dens_frac", 0.01);
 
     // Set density floor
     Real float_min = std::numeric_limits<float>::min();
@@ -525,79 +568,93 @@ namespace {
     }
 
     //----------------------------------------------------------------------------------------
-    //! Computes density in cylindrical coordinates
-    KOKKOS_INLINE_FUNCTION  
-    static Real DenProfileCyl(struct warp_pgen pgen, const Real rad, const Real phi, const Real z) {
-        Real den;
-        Real csq = pgen.c0sq;
-        enum Masking {nomask,innermask,outermask} inner=innermask;
+    //! Smooth radial containment tapers (replace the old hard density mask). The surface
+    //! density is multiplied by T_in*T_out so the disc rolls smoothly to the floor at both
+    //! edges and is contained within the domain:
+    //!   inner cavity   T_in(R)  = exp(-(r_cav/R)^cav_n)   (super-exponential -> reaches dfloor)
+    //!   outer roll-off T_out(R) = 0.5[1 - tanh((R-r_out_taper)/w_out_taper)]
+    //! Evaluated at the TRUE cylindrical R (not the rtaper-clamped radius) so the taper can
+    //! actually drive the density to the floor near the axis.
+    KOKKOS_INLINE_FUNCTION
+    static Real EdgeTaper(struct warp_pgen pgen, const Real rad) {
+        Real rr = fmax(rad, 1.0e-8);
+        Real t_in  = std::exp(-std::pow(pgen.r_cav/rr, pgen.cav_n));
+        Real t_out = 0.5*(1.0 - std::tanh((rr - pgen.r_out_taper)/pgen.w_out_taper));
+        return t_in*t_out;
+    }
 
+    //! d ln(T_in*T_out)/d ln R, for the equilibrium radial pressure gradient in VelProfileCyl.
+    //! The inner (cavity) contribution diverges as R->0; it is capped because once the density
+    //! is floored its true gradient is ~0, so the un-floored cavity slope must not inflate the
+    //! inner velocity (and hence the CFL). The cap (6) is above the value anywhere the density
+    //! is still physical (>~ few % of midplane), so the disc body is unaffected.
+    KOKKOS_INLINE_FUNCTION
+    static Real EdgeTaperDlnDlnR(struct warp_pgen pgen, const Real rad) {
+        Real rr = fmax(rad, 1.0e-8);
+        Real dln_in = pgen.cav_n*std::pow(pgen.r_cav/rr, pgen.cav_n);   // +ve, diverges as R->0
+        dln_in = fmin(dln_in, 6.0);
+        Real u = (rr - pgen.r_out_taper)/pgen.w_out_taper;
+        Real dln_out = -rr*(1.0 + std::tanh(u))/pgen.w_out_taper;       // -ve
+        return dln_in + dln_out;
+    }
+
+    //----------------------------------------------------------------------------------------
+    //! Computes density in cylindrical coordinates
+    KOKKOS_INLINE_FUNCTION
+    static Real DenProfileCyl(struct warp_pgen pgen, const Real rad, const Real phi, const Real z) {
+        Real csq = pgen.c0sq;
         if (pgen.eos_flag != pgen.eos_isothermal) csq = CSoundSqCyl(pgen,rad, phi, z);
 
-        if (MaskingCylCoords(pgen,rad,phi,z)==inner){
-            den = 1.0;
-        } else {
-            Real rc = fmax(rad, pgen.rtaper);   // clamp R->rtaper near the axis
-            Real denmid = pgen.rho0*pow(rc/pgen.r0,-pgen.d_slope);
-            Real dentem = denmid*std::exp(pgen.gm0/csq*(1./std::sqrt(SQR(rc)+SQR(z))-1./rc));
-            den = dentem;
-        }
+        Real rc = fmax(rad, pgen.rtaper);        // clamp the divergent power-law prefactor
+        Real soft2 = SQR(pgen.softening_len);
+        Real denmid = pgen.rho0*pow(rc/pgen.r0,-pgen.d_slope);
+        // softened vertical hydrostatic factor:
+        //   exp[(GM/csq)(1/sqrt(R^2+z^2+soft^2) - 1/sqrt(R^2+soft^2))]
+        Real dentem = denmid*std::exp(pgen.gm0/csq*(1.0/std::sqrt(SQR(rc)+SQR(z)+soft2)
+                                                  - 1.0/std::sqrt(SQR(rc)+soft2)));
+        // smooth inner/outer containment tapers, evaluated at the TRUE cylindrical R
+        Real den = dentem*EdgeTaper(pgen, rad);
         return fmax(den,pgen.dfloor);
     }
 
     //----------------------------------------------------------------------------------------
     //! Target cylindrical sound speed squared = pressure/density
     // Constant on cylinders of constant R
-    KOKKOS_INLINE_FUNCTION  
+    KOKKOS_INLINE_FUNCTION
     static Real CSoundSqCyl(struct warp_pgen pgen, const Real rad, const Real phi, const Real z) {
-    Real csq;
-    enum Masking {nomask,innermask,outermask};
-
-    if (MaskingCylCoords(pgen,rad,phi,z)==innermask){
-        csq = 0.1;
-    } else {
-        csq = pgen.c0sq*pow(fmax(rad,pgen.rtaper)/pgen.r0, -pgen.s_slope);
-    }
-    return csq;
+    // Locally-isothermal target c_s^2(R) = c0sq*(R/r0)^-s_slope everywhere (no masked branch).
+    // The rtaper clamp keeps c_s finite as R->0; consistent with the WarpConstraint reset.
+    return pgen.c0sq*pow(fmax(rad,pgen.rtaper)/pgen.r0, -pgen.s_slope);
     }
 
     //----------------------------------------------------------------------------------------
     //! Target spherical sound speed squared
     // Constant on shells of constant r
-    KOKKOS_INLINE_FUNCTION  
+    KOKKOS_INLINE_FUNCTION
     static Real CSoundSqSph(struct warp_pgen pgen, const Real rad, const Real theta, const Real phi) {
-    Real csq;
-    enum Masking {nomask,innermask,outermask};
-
-    if (MaskingSphCoords(pgen,rad,theta,phi)==innermask){
-        csq = 0.1;
-    } else {
-        csq = pgen.c0sq*pow(fmax(rad,pgen.rtaper)/pgen.r0, -pgen.s_slope);
-    }
-    return csq;
+    // Spherical-shell target c_s^2(r) = c0sq*(r/r0)^-s_slope everywhere (no masked branch).
+    return pgen.c0sq*pow(fmax(rad,pgen.rtaper)/pgen.r0, -pgen.s_slope);
     }
 
     //----------------------------------------------------------------------------------------
     //! Computes rotational velocity in cylindrical coordinates
-    KOKKOS_INLINE_FUNCTION  
+    KOKKOS_INLINE_FUNCTION
     static Real VelProfileCyl(struct warp_pgen pgen, const Real rad, const Real phi, const Real z) {
-        enum Masking {nomask,innermask,outermask};
-
-        if (MaskingCylCoords(pgen,rad,phi,z)==innermask){
-            Real vel = 0.01;
-            return vel;
-            
-        } else {
-            Real rc = fmax(rad, pgen.rtaper);   // clamp R->rtaper near the axis
-            Real csq = CSoundSqCyl(pgen, rad, phi, z);
-            Real vel = (-pgen.d_slope-pgen.s_slope)*csq/(pgen.gm0/rc)+(1.0-pgen.s_slope)+pgen.s_slope*rc/std::sqrt(rc*rc+z*z);
-
-            if (vel < 0.0){
-                pgen.error=1;
-            }
-            vel = std::sqrt(pgen.gm0/rc)*std::sqrt(vel);
-            return vel;
-        }
+        // Equilibrium azimuthal velocity for the softened potential
+        //   Phi = -GM/sqrt(R^2+z^2+soft^2),
+        // including the radial pressure gradient of the (tapered) density and c_s^2(R):
+        //   v_phi^2 = v_c^2 + (p_eff+q) c_s^2 - GM q [1/sqrt(R^2+z^2+soft^2) - 1/sqrt(R^2+soft^2)]
+        // with v_c^2 = GM R^2/(R^2+soft^2)^{3/2}, p_eff = -d_slope + dln(T_in T_out)/dlnR,
+        // q = -s_slope. Reduces to the standard point-mass thin-disc result as soft->0 and with
+        // no taper. Softening caps v_c near the centre (bounds the CFL); the taper term keeps
+        // the tapered edges in equilibrium so they do not ring.
+        Real soft2 = SQR(pgen.softening_len);
+        Real csq = CSoundSqCyl(pgen, rad, phi, z);
+        Real vc2 = pgen.gm0*SQR(rad)/pow(SQR(rad)+soft2, 1.5);
+        Real p_eff_plus_q = (-pgen.d_slope - pgen.s_slope) + EdgeTaperDlnDlnR(pgen, rad);
+        Real Gz = 1.0/std::sqrt(SQR(rad)+SQR(z)+soft2) - 1.0/std::sqrt(SQR(rad)+soft2);
+        Real v2 = vc2 + p_eff_plus_q*csq + pgen.s_slope*pgen.gm0*Gz;
+        return std::sqrt(fmax(v2, 0.0));
     }
 
     //----------------------------------------------------------------------------------------
@@ -796,36 +853,34 @@ void MySourceTerms(Mesh* pm, const Real bdt) {
             }
         }
         
-        // Cylindrical equilibrium velocity damping source terms -->
+        // Optional vertical-velocity relaxation (off by default; relaxation tests only) -->
         if (disc_params_.damp_switch == 1) {
-        //  Now damp the z vertical velocity
+        //  Damp the z vertical velocity toward zero on the local orbital timescale.
         u0_(m,IM3,k,j,i) -= bdt/(disc_params_.tau*pow(cyl_rad/disc_params_.r0,3.0/2.0))*(w0_(m,IDN,k,j,i)*w0_(m,IVZ,k,j,i)-0.0);
         }
 
-        // Finally if in the masked region set the conserved and primitive variables to the initial conditions
-        enum Masking {nomask,innermask,outermask};
-        if ((MaskingCartCoords(disc_params_,x,y,z)==innermask) || (MaskingCartCoords(disc_params_,x,y,z)==outermask)){
-
-            // Get the primitive variables
-            Real den(0.0), pgas(0.0), ux(0.0), uy(0.0), uz(0.0);
-            ComputePrimitives(disc_params_,x,y,z,den,pgas,ux,uy,uz);
-
-            // Now set the conserved variables using the primitive variables
-            u0_(m,IDN,k,j,i) = den;
-            u0_(m,IM1,k,j,i) = den*ux;
-            u0_(m,IM2,k,j,i) = den*uy;
-            u0_(m,IM3,k,j,i) = den*uz;
-            if (disc_params_.eos_flag != disc_params_.eos_isothermal) {
-                u0_(m,IEN,k,j,i) = pgas/(disc_params_.gamma_gas - 1.0)+0.5*(SQR(ux)+SQR(uy)+ SQR(uz))/den;
-            }
-
-            // Also set the primitive variables
-            w0_(m,IDN,k,j,i) = den;
-            w0_(m,IVX,k,j,i) = ux;
-            w0_(m,IVY,k,j,i) = uy;
-            w0_(m,IVZ,k,j,i) = uz;
-            if (disc_params_.eos_flag != disc_params_.eos_isothermal) {
-                w0_(m,IEN,k,j,i) = pgas/(disc_params_.gamma_gas - 1.0);
+        // Inner-region velocity damping -->
+        // Temper the fast Keplerian motion near the centre so the CFL timestep stays bounded
+        // (used with the softened potential). A smooth tanh ramp f(r) is ~1 for r < r_damp and
+        // ~0 by the inner warp edge (r=2), so the disc of interest is untouched. The update is
+        // implicit/exponential, hence unconditionally stable for any bdt:
+        //   mom -> mom / (1 + bdt*f(r)/damp_tau).
+        // Only floor-density inner gas is affected (its density is already tapered to ~floor).
+        if (disc_params_.inner_damp == 1) {
+            Real f = 0.5*(1.0 - std::tanh((sph_rad - disc_params_.r_damp)/disc_params_.w_damp));
+            if (f > 1.0e-6) {
+                Real fac = 1.0/(1.0 + bdt*f/disc_params_.damp_tau);
+                Real rho = u0_(m,IDN,k,j,i);
+                Real ke_old = 0.5*(SQR(u0_(m,IM1,k,j,i)) + SQR(u0_(m,IM2,k,j,i))
+                                 + SQR(u0_(m,IM3,k,j,i)))/rho;
+                u0_(m,IM1,k,j,i) *= fac;
+                u0_(m,IM2,k,j,i) *= fac;
+                u0_(m,IM3,k,j,i) *= fac;
+                // Remove the damped kinetic energy from the total energy (do not convert to heat;
+                // WarpConstraint resets the pressure to c_s^2(R)*rho immediately after ConToPrim).
+                if (disc_params_.eos_flag != disc_params_.eos_isothermal) {
+                    u0_(m,IEN,k,j,i) -= (1.0 - fac*fac)*ke_old;
+                }
             }
         }
 
@@ -1255,4 +1310,72 @@ void WarpHistory(HistoryData *pdata, Mesh *pm) {
 
   for (int n=0; n<nhist_; ++n) { pdata->hdata[n] = sum_this_mb.the_array[n]; }
   return;
+}
+
+//----------------------------------------------------------------------------------------
+//! \fn WarpRefine
+//! \brief User adaptive-refinement criterion (enrolled when refinement=adaptive and a
+//! <amr_criterion> block has method=user). A MeshBlock is flagged for refinement when it
+//! contains any cell that is BOTH (1) in the disc body -- rho > ref_dfrac * rho_mid(r), the
+//! midplane power-law density at the cell's spherical radius r -- AND (2) under-resolved:
+//! the cell size Delta exceeds H(r)/ref_N, i.e. fewer than ref_N cells per scaleheight, with
+//! H(r) = sqrt(c0sq/GM) * r^{(3-s_slope)/2} the analytic thin-disc scaleheight. A factor-2
+//! hysteresis on the derefinement test (Delta <= H/(2 ref_N)) prevents refine/derefine
+//! thrashing. This gives a spherical, disc-following mesh that targets ref_N cells/H in the
+//! disc and leaves the cavity, the tenuous atmosphere, and the empty corners coarse.
+void WarpRefine(MeshBlockPack *pmbp) {
+  Mesh *pmesh = pmbp->pmesh;
+  int nmb = pmbp->nmb_thispack;
+  int mbs = pmesh->gids_eachrank[global_variable::my_rank];
+  auto &refine_flag = pmesh->pmr->refine_flag;
+  auto &indcs = pmesh->mb_indcs;
+  int is = indcs.is, nx1 = indcs.nx1;
+  int js = indcs.js, nx2 = indcs.nx2;
+  int ks = indcs.ks, nx3 = indcs.nx3;
+  const int nkji = nx3*nx2*nx1;
+  const int nji  = nx2*nx1;
+  auto &size = pmbp->pmb->mb_size;
+  auto &w0 = pmbp->phydro->w0;
+  auto dp = disc_params;
+  const Real eps = std::sqrt(dp.c0sq/dp.gm0);   // H(r) = eps * r^{(3-s_slope)/2}
+  const Real sexp = 0.5*(3.0 - dp.s_slope);
+
+  par_for_outer("WarpRefine", DevExeSpace(), 0, 0, 0, (nmb-1),
+  KOKKOS_LAMBDA(TeamMember_t tmember, const int m) {
+    Real dx1 = size.d_view(m).dx1;
+    Real dx2 = size.d_view(m).dx2;
+    Real dx3 = size.d_view(m).dx3;
+    Real dmax = fmax(dx1, fmax(dx2, dx3));
+    Real x1min = size.d_view(m).x1min, x1max = size.d_view(m).x1max;
+    Real x2min = size.d_view(m).x2min, x2max = size.d_view(m).x2max;
+    Real x3min = size.d_view(m).x3min, x3max = size.d_view(m).x3max;
+
+    int team_code;
+    Kokkos::parallel_reduce(Kokkos::TeamThreadRange(tmember, nkji),
+    [=](const int idx, int &lcode) {
+      int k = idx/nji;
+      int j = (idx - k*nji)/nx1;
+      int i = (idx - k*nji - j*nx1) + is;
+      j += js;  k += ks;
+      Real x = CellCenterX(i-is, nx1, x1min, x1max);
+      Real y = CellCenterX(j-js, nx2, x2min, x2max);
+      Real z = CellCenterX(k-ks, nx3, x3min, x3max);
+      Real r = fmax(std::sqrt(x*x + y*y + z*z), 1.0e-8);
+      Real H = eps*std::pow(r, sexp);
+      Real rho_mid = dp.rho0*std::pow(r/dp.r0, -dp.d_slope);
+      int c = 0;
+      if (w0(m,IDN,k,j,i) > dp.ref_dfrac*rho_mid) {   // (1) in the disc body
+        if (dmax*dp.ref_N > H)        c = 2;          // (2) under-resolved -> refine
+        else if (2.0*dmax*dp.ref_N > H) c = 1;        //     adequate       -> keep
+        else                          c = 0;          //     over-resolved  -> derefine ok
+      }
+      lcode = (c > lcode) ? c : lcode;
+    }, Kokkos::Max<int>(team_code));
+
+    if (team_code == 2)      refine_flag.d_view(m+mbs) =  1;   // refine
+    else if (team_code == 1) refine_flag.d_view(m+mbs) =  0;   // keep
+    else                     refine_flag.d_view(m+mbs) = -1;   // derefine
+  });
+  refine_flag.template modify<DevExeSpace>();
+  refine_flag.template sync<HostMemSpace>();
 }
